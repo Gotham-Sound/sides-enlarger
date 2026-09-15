@@ -237,6 +237,17 @@ else
   echo "    [.sceneline] FAIL"; fail=1
 fi
 
+# scriptparse conformance corpus (hub #40 Phase 0, inverted verification): runs
+# when a hub checkout is present (../scriptparse or $SCRIPTPARSE_HUB), skips
+# cleanly otherwise. Consumability is the gate; local misses are informational.
+echo "==> scriptparse conformance corpus (JS-consumability)"
+if node tools/conformance_check.mjs 2>/dev/null | tee /tmp/conformance.out | grep -qE '^CONFORMANCE: (GREEN|SKIP)'; then
+  grep -E '^(CONFORMANCE|JS-consumability|  [a-z_]+\.json)' /tmp/conformance.out | sed 's/^/    /'
+else
+  grep -E '^(CONFORMANCE|  RED)' /tmp/conformance.out | sed 's/^/    /' || true
+  echo "    [conformance] FAIL"; fail=1
+fi
+
 for real in "$@"; do
   name="$(basename "$real" .pdf)"
   echo "==> testing real: $name"

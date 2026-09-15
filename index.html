@@ -2498,6 +2498,11 @@
       process, extract, analyze, PALETTE,
       // .sceneline interchange (spec v2)
       parseSceneline, unionShows, reconcile, buildSidesBlock, buildScenelineExport, normalizeCueName,
+      // The local name gate, exported (pure, no behavior change) so
+      // tools/conformance_check.mjs can measure it against the hub's cue_gate
+      // and charset vectors (scriptparse #40 Phase-1 sizing). It is NOT a
+      // policy interpreter; Phase-1 adoption retires it onto policy.json.
+      isPlausibleName,
     };
   };
 });

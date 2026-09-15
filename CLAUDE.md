@@ -45,6 +45,7 @@ tools/make_fixture.py   Generates a synthetic screenplay PDF (reportlab) for tes
 tools/run_engine_node.mjs  Runs engine.js headless on a PDF (uses node_modules build).
 tools/check.py          Independent verifier (pymupdf) + side-by-side page renders.
 tools/test_sceneline.mjs  Headless acceptance tests for the .sceneline interchange.
+tools/conformance_check.mjs  Inverted-verification runner for the hub's conformance corpus (scriptparse #40).
 tools/test.sh           One-shot: fixture (and optional real PDFs) at 1.0/1.25/1.5.
 docs/sceneline-interchange-v2.md  The .sceneline interchange spec (committed, no script text).
 .nojekyll               So GitHub Pages serves index.html as-is.
@@ -301,3 +302,10 @@ rules that most often apply here:
   `core.autocrlf` artifact, not drift.
 - Escalation is the hub's job: if litigation goes novel, the hub labels
   needs-peter. Don't ping Peter directly from here for federation matters.
+- **Standing Phase-0 harness:** `node tools/conformance_check.mjs --hub ../scriptparse`
+  (test.sh runs it when a hub checkout is present). It verifies every corpus file's
+  sha256 against `manifest.json`, JSON-parses all of it with zero deps, and prints the
+  manifest sha256 (the ack number, raw and CR-stripped) plus the local-vs-contract
+  agreement counts for `normalizeCueName` / `isPlausibleName`. Consumability is the
+  gate; the local misses are red-on-local (the Phase-1 delta), never a failure. Post
+  the numbers on the hub work-order issue on every corpus bump.
