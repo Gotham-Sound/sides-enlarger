@@ -72,8 +72,17 @@ names = sorted(c["name"] for c in rep.get("characters", []))
 assert "WALLACE" not in names, "grey-shaded character leaked into the list"
 assert any("grey" in w.lower() for w in rep.get("warnings", [])), \
     "no grey-region warning emitted"
-expected = sorted(["LAURA", "MORROW", "WITNESS", "DIAZ",
-                   "ELEANOR FROM HR", "SAM", "MERC #1"])
+# Identity is the shared scriptparse policy (federation Phase 1): the
+# generational suffixes seat as two distinct performers with the period
+# stripped; ELEANOR FROM HR is gate-railed (stop word FROM, the canonical
+# FROM rejection) and must land on the never-silent rejected rail, not vanish.
+expected = sorted(["LAURA", "MORROW", "WITNESS", "DIAZ", "SAM", "MERC #1",
+                   "SALLY, JR", "SALLY, SR"])
+rej = {r["name"]: r for r in rep.get("rejectedCues", [])}
+assert "ELEANOR FROM HR" in rej and "FROM" in rej["ELEANOR FROM HR"]["reason"], \
+    "ELEANOR FROM HR must be railed with the FROM reason, got %r" % rej
+assert any("ELEANOR FROM HR" in w for w in rep.get("warnings", [])), "railed cue not announced"
+assert rep.get("policyVersion"), "report carries no policyVersion"
 if names != expected:
     print("      extracted:", names)
     print("      expected :", expected)
@@ -157,6 +166,39 @@ python3 - <<'PY' && echo "    [wm-text: miss warns] PASS" || { echo "    [wm-tex
 import json
 rep = json.load(open("out/fixture.wmmiss.pdf.report.json"))
 assert any("did not match" in x for x in rep.get("warnings", [])), "no-match warning missing"
+PY
+
+# burn-in stamp (signal 2): a NON-rotated per-recipient stamp at a fixed
+# position on every page shares the page-1 cue baseline. Without the
+# policy-driven repeated-position strip that cue fails geometric detection;
+# with it the cast and every page's dialogue-line count match the clean
+# fixture, the report says so (never silent), the stamp bytes stay put, and
+# reader mode does not read the stamp aloud.
+echo "==> fixture (burn-in stamp): repeated-position strip recovers the cast (scriptparse #16 signal 2, #37 residual)"
+node tools/run_engine_node.mjs out/fixture_burnin.pdf out/fixture_burnin.out.pdf 1.25 \
+  >/dev/null 2>out/fixture_burnin.err || { echo "    [burn-in] ENGINE ERROR:"; cat out/fixture_burnin.err; fail=1; }
+python3 - <<'PY' && echo "    [burn-in: cast + lines recovered, never-silent] PASS" || { echo "    [burn-in] FAIL"; fail=1; }
+import json
+clean = json.load(open("out/fixture.1.25.pdf.report.json"))
+rep = json.load(open("out/fixture_burnin.out.pdf.report.json"))
+cn = sorted(c["name"] for c in clean.get("characters", []))
+bn = sorted(c["name"] for c in rep.get("characters", []))
+assert bn == cn, "cast not recovered under the stamp: %r vs clean %r" % (bn, cn)
+cl = [p["dialogueLines"] for p in clean["pages"]]
+bl = [p["dialogueLines"] for p in rep["pages"]]
+assert bl == cl, "dialogue line counts differ under the stamp: %r vs clean %r" % (bl, cl)
+assert any("Prepared for J. Doe" == b["text"] for b in rep.get("burnIns", [])), "burn-in rail missing the stamp: %r" % rep.get("burnIns")
+assert any("burn-in" in w.lower() for w in rep.get("warnings", [])), "no never-silent burn-in warning"
+PY
+check_one out/fixture_burnin.pdf out/fixture_burnin.out.pdf "burn-in: geometry parity" "$RENDER_DIR/fixture_burnin"
+node tools/run_engine_node.mjs out/fixture_burnin.pdf out/fixture_burnin.reader.pdf 1.25 'LAURA=0' --mode=reader \
+  >/dev/null 2>out/fixture_burnin.reader.err || { echo "    [burn-in reader] ENGINE ERROR:"; cat out/fixture_burnin.reader.err; fail=1; }
+check_one out/fixture_burnin.pdf out/fixture_burnin.reader.pdf "burn-in: reader parity" "$RENDER_DIR/fixture_burnin_reader"
+python3 - <<'PY' && echo "    [burn-in: reader does not read the stamp] PASS" || { echo "    [burn-in: reader stamp] FAIL"; fail=1; }
+import fitz
+doc = fitz.open("out/fixture_burnin.reader.pdf")
+txt = "\n".join(doc[i].get_text() for i in range(doc.page_count))
+assert "Prepared for J. Doe" not in txt, "stamp text leaked into the reader output"
 PY
 
 # multi-episode day-side: the running header varies per page (only the show

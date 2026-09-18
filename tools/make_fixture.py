@@ -162,6 +162,15 @@ PAGES = [
         ("blank",),
         ("cue", "SAM (V.O.)"),
         ("dial", "That was the day I quit HR."),
+        ("blank",),
+        # generational suffixes are DISTINCT performers (scriptparse #63): both
+        # seat, as SALLY, JR and SALLY, SR (trailing period stripped by the
+        # shared normalization). The comma is admissible only in this shape.
+        ("cue", "SALLY, JR."),
+        ("dial", "Dad. Put it down."),
+        ("blank",),
+        ("cue", "SALLY, SR."),
+        ("dial", "Nobody tells me what to do, junior."),
     ],
     # page 6 — title/coverage page: no dialogue anywhere; must never be
     # enlarged in ANY mode (Everything mode included)
@@ -264,6 +273,14 @@ PAGES = [
 # distributed sides (a left-clipping bug eats "PROC" and leaves "EDURAL").
 OUT_MULTI = os.path.join(os.path.dirname(__file__), "..", "out", "fixture_multi.pdf")
 OUT_WM = os.path.join(os.path.dirname(__file__), "..", "out", "fixture_wm.pdf")
+OUT_BURN = os.path.join(os.path.dirname(__file__), "..", "out", "fixture_burnin.pdf")
+
+# The non-rotated per-recipient stamp for fixture_burnin.pdf: fixed position on
+# EVERY page (a burned-in screener stamp), sharing the baseline of the first
+# cue on page 1 (y = H - 54 - 9 * LEAD), so without scriptparse burn-in
+# signal 2 that cue line grows a left segment and fails geometric detection.
+BURN_TEXT = "Prepared for J. Doe"
+BURN_X, BURN_Y, BURN_SIZE = 24, H - 54 - 9 * LEAD, 7
 # Watermark every cue EXCEPT the leads, so calibration still succeeds on the
 # clean lead cues and the minor characters vanish SILENTLY (the #37 partial
 # loss), rather than tripping the "no cues found" fallback.
@@ -351,8 +368,15 @@ def _wm_glyph(c, y, drift):
     c.setFont(FONT, SIZE)
 
 
-def _draw_page(c, pi, page, watermark=False):
+def _draw_page(c, pi, page, watermark=False, burnin=False):
     drift = (pi * 3) - 4 if pi < 6 else 2  # photocopy drift, mild on 7-8
+    if burnin:
+        # light-grey horizontal stamp, no drift (burned in, not photocopied)
+        c.saveState()
+        c.setFillGray(0.6)
+        c.setFont(FONT, BURN_SIZE)
+        c.drawString(BURN_X, BURN_Y, BURN_TEXT)
+        c.restoreState()
     c.setFont(FONT, SIZE)
     y = H - 54  # ~0.75" top margin
     # page number top-right
@@ -465,6 +489,20 @@ def make_watermarked(path):
     print("wrote", os.path.abspath(path), "(watermarked) pages:", len(PAGES))
 
 
+def make_burnin(path):
+    """Same screenplay as the clean fixture, with a NON-rotated per-recipient
+    stamp at a fixed position on every page (see BURN_*). Signal 1 (rotation)
+    cannot catch it; scriptparse burn-in signal 2 (repeated position + a
+    lowercase letter) strips it from line-building, so the page-1 cue that
+    shares its baseline is recovered. The stamp's bytes stay untouched."""
+    c = _new_canvas(path)
+    for pi, page in enumerate(PAGES):
+        _draw_page(c, pi, page, burnin=True)
+        c.showPage()
+    c.save()
+    print("wrote", os.path.abspath(path), "(burn-in stamp) pages:", len(PAGES))
+
+
 def main():
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     c = _new_canvas(OUT)
@@ -475,6 +513,7 @@ def main():
     print("wrote", os.path.abspath(OUT), "pages:", len(PAGES))
     make_multi(OUT_MULTI)
     make_watermarked(OUT_WM)
+    make_burnin(OUT_BURN)
 
 if __name__ == "__main__":
     main()

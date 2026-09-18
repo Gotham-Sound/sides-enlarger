@@ -52,7 +52,8 @@ for (const f of argv.filter(a => a.startsWith('--'))) {
   }
 }
 
-const engine = createSidesEngine({ pdfjsLib, PDFLib });
+const policy = JSON.parse(fs.readFileSync(path.join(root, 'policy/scriptparse-policy.json'), 'utf8'));
+const engine = createSidesEngine({ pdfjsLib, PDFLib, policy });
 const bytes = new Uint8Array(fs.readFileSync(inFile));
 
 try {

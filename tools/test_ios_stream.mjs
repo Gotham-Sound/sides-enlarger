@@ -45,7 +45,8 @@ else { console.log('  [control] FAIL: raw pdf.js did NOT fail; cliff 2 not repro
 
 // (2) engine.process with the iterator stripped must SUCCEED (extract() reinstalls the polyfill)
 stripStreamAsyncIterator();
-const engine = createSidesEngine({ pdfjsLib, PDFLib });
+const policy = JSON.parse(fs.readFileSync(path.join(root, 'policy/scriptparse-policy.json'), 'utf8'));
+const engine = createSidesEngine({ pdfjsLib, PDFLib, policy });
 let chars = -1, engErr = '';
 try {
   const { report } = await engine.process(new Uint8Array(bytes), { scale: 1.25 });
