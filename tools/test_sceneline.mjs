@@ -26,7 +26,8 @@ const pdfjsLib = fs.existsSync(pdfCjs)
   ? require(pdfCjs)
   : await import(pathToFileURL(path.join(root, 'node_modules/pdfjs-dist/legacy/build/pdf.mjs')).href);
 const createSidesEngine = require(path.join(root, 'engine.js'));
-const engine = createSidesEngine({ pdfjsLib, PDFLib });
+const policy = JSON.parse(fs.readFileSync(path.join(root, 'policy/scriptparse-policy.json'), 'utf8'));
+const engine = createSidesEngine({ pdfjsLib, PDFLib, policy });
 
 const fixture = path.join(root, 'out', 'fixture.pdf');
 const fixtureMulti = path.join(root, 'out', 'fixture_multi.pdf');
@@ -76,11 +77,14 @@ await test('(b) file identity is authoritative; geometry gives pages; unmatched 
 
   // A show file that: keeps most PDF names, adds an operator-only name no
   // parser would find (MERC #2), tests parenthetical normalization
-  // (LAURA (V.O.) -> LAURA), and OMITS WITNESS (a real PDF cue).
+  // (LAURA (V.O.) -> LAURA) and the shared trailing-punctuation strip
+  // (SALLY, JR. -> SALLY, JR, scriptparse #63/#79), and OMITS WITNESS (a
+  // real PDF cue). Names the shared gate rails (ELEANOR FROM HR) never
+  // appear in a hub-written file, so none is listed here.
   const file = {
     format: 'sceneline', interchange: 2, source: { title: 'EP 407', profile: 'lean' },
     show: {
-      characters: ['LAURA (V.O.)', 'MORROW', 'DIAZ', 'SAM', 'ELEANOR FROM HR', 'MERC #1', 'MERC #2'],
+      characters: ['LAURA (V.O.)', 'MORROW', 'DIAZ', 'SAM', 'SALLY, JR.', 'MERC #1', 'MERC #2'],
       scenes: [{ scene: '1', scene_heading: 'INT. PRECINCT BULLPEN - NIGHT', speakers: ['LAURA'] }],
     },
     extensions: {},
@@ -102,7 +106,7 @@ await test('(b) file identity is authoritative; geometry gives pages; unmatched 
   // WITNESS present in PDF but omitted from the file -> secondary group
   assert(byName['WITNESS'] && byName['WITNESS'].source === 'pdf', 'geometric-only WITNESS not surfaced as secondary');
   // every file name appears as a source:'file' roster entry (identity from file)
-  for (const n of ['LAURA', 'MORROW', 'DIAZ', 'SAM', 'ELEANOR FROM HR', 'MERC #1', 'MERC #2'])
+  for (const n of ['LAURA', 'MORROW', 'DIAZ', 'SAM', 'SALLY, JR', 'MERC #1', 'MERC #2'])
     assert(byName[n] && byName[n].source === 'file', 'file identity missing ' + n);
 });
 

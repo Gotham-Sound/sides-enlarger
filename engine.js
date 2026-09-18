@@ -128,24 +128,235 @@
     return { cueX, dialX, parenX };
   }
 
+  // ---------- scriptparse policy interpreter (identity as policy-as-data) ----------
+  // JS mirror of the hub's Python reference interpreter (scriptparse/policy.py
+  // plus the pure helpers in scriptparse/build_matrix.py), driven ONLY by the
+  // injected policy.json (lists, maps and scalars: no regex ships in the data;
+  // the regexes below are this interpreter's implementation details, exactly
+  // as they are in the Python reference). Pinned by the hub's conformance
+  // corpus: tools/conformance_check.mjs must stay green on every vector file
+  // this bench consumes. Identity RULINGS live in the hub; this bench
+  // interprets, never decides (federation Phase 1, scriptparse #40 / #83).
+  function compilePolicy(policy) {
+    if (!policy || typeof policy !== 'object' || typeof policy.policy_version !== 'string') {
+      throw new Error('createSidesEngine: the scriptparse policy.json object is required ({ pdfjsLib, PDFLib, policy })');
+    }
+    const esc = x => String(x).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const canonTag = t => String(t).replace(/\./g, '').replace(/\s+/g, ' ').trim().toUpperCase();
+    const upperNorm = x => String(x || '').trim().replace(/\s+/g, ' ').toUpperCase();
+    const stripTrailingPunct = x => x.replace(/[.:]+$/, '').trim();
+    const cpLen = x => Array.from(x).length;
+    const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+    const standard = new Set((policy.standard_tags || []).map(canonTag));
+    const channelTags = new Set((policy.channel_tags || []).map(canonTag));
+    const possessive = new Set(policy.possessive_channel_nouns || []);
+    const kinds = new Map(Object.keys(policy.channel_kinds || {}).map(k => [canonTag(k), policy.channel_kinds[k]]));
+    const kindDefault = policy.channel_kind_default || 'unknown';
+    const marker = policy.numbered_part_marker != null ? String(policy.numbered_part_marker) : '#';
+    const markerRe = marker ? new RegExp(esc(marker) + '\\d') : null;
+    const numberedTailRe = marker ? new RegExp(esc(marker) + '\\d+$') : null;
+    const nonCharacter = new Set(policy.transitions_non_character || []);
+    const stopWords = new Set(policy.cue_stop_words || []);
+    const rejectTrailing = (policy.cue_reject_trailing || ['-']).map(String);
+    const suffixes = new Set((policy.name_suffixes || []).map(x => String(x).replace(/\./g, '').toUpperCase()));
+    const numWords = policy.furniture_numbered_words || [], numberWords = policy.furniture_number_words || [];
+    // rule type 'numbered-furniture': <word> + (digits, optional letter, optional marker prefix | number word)
+    const furnitureRe = numWords.length
+      ? new RegExp('^(?:' + numWords.map(esc).join('|') + ')\\s+(?:' + (marker ? esc(marker) + '?' : '') + '\\d+[A-Z]?'
+        + (numberWords.length ? '|' + numberWords.map(esc).join('|') : '') + ')$')
+      : /(?!)/;
+    const TRAILING_PAREN = /\s*\(([^()]*)\)\s*$/;
+    const POSSESSIVE = /^(.+?)['’]S\s+([A-Z]+)$/;
+    const SUFFIX_TAIL = /,\s*([A-Z][A-Z.]*)$/;
+    const PAGE_TOKEN = /^[A-Z]?\d+[A-Z]?\.$/;
+
+    // normalize_text / norm_cue: the SEATING layer (what a printed cue line
+    // becomes before it can enter a character list)
+    const normalizeText = x => {
+      let t = String(x || '').trim();
+      t = t.replace(/[“”"]/g, '').replace(/[’‘]/g, "'");
+      t = t.replace(/\[[^\]]+\]/g, '').replace(/\([^)]*\)/g, '');
+      return t.replace(/\s+/g, ' ').trim();
+    };
+    const normCue = raw => {
+      const t = stripTrailingPunct(normalizeText(raw).toUpperCase());
+      const out = [];
+      for (const w of t.split(/\s+/)) if (w && (!out.length || out[out.length - 1] !== w)) out.push(w);
+      return out.join(' ');
+    };
+
+    // fold / part_of / parts / fold_candidates: the DERIVATION layer (raw
+    // occurrence strings in; trailing [.:] canonicalized like seating, #79)
+    const ident = name => ({ base: name, channel: null, tier: null, kind: null });
+    const kindOf = ch => (kinds.has(canonTag(ch)) ? kinds.get(canonTag(ch)) : kindDefault);
+    const fold = printed => {
+      const name = stripTrailingPunct(upperNorm(printed));
+      if (!name) return ident(name);
+      if (markerRe && markerRe.test(name)) return ident(name); // numbered parts never fold
+      let base = name, channel = null, sawStandard = false;
+      for (;;) {
+        const m = TRAILING_PAREN.exec(base);
+        if (!m) break;
+        const tag = canonTag(m[1]);
+        if (standard.has(tag)) { sawStandard = true; base = base.slice(0, m.index).replace(/\s+$/, ''); }
+        else if (channelTags.has(tag) && channel === null) { channel = tag; base = base.slice(0, m.index).replace(/\s+$/, ''); }
+        else return ident(name); // unknown (or second channel) parenthetical: not a recognized variant
+      }
+      if (channel === null) {
+        const pm = POSSESSIVE.exec(base);
+        if (pm && possessive.has(pm[2])) return { base: pm[1].trim(), channel: pm[2], tier: 'channel', kind: kindOf(pm[2]) };
+      }
+      if (channel !== null) return { base, channel, tier: 'channel', kind: kindOf(channel) };
+      if (sawStandard && base !== name) return { base, channel: null, tier: 'standard', kind: null };
+      return ident(name);
+    };
+    const partOf = (cue, aliases) => {
+      const name = stripTrailingPunct(upperNorm(cue));
+      if (aliases && hasOwn(aliases, name) && aliases[name]) return upperNorm(aliases[name]);
+      const f = fold(name);
+      return (f.tier === 'standard' || f.tier === 'channel') ? f.base : name;
+    };
+    const foldCandidates = names => {
+      const out = [];
+      for (const n of (names || [])) {
+        const f = fold(n);
+        if (f.tier === 'channel' && f.base && f.base !== n) out.push({ from: n, into: f.base, channel: f.channel, tier: 'channel', kind: f.kind });
+      }
+      return out;
+    };
+    const nv = v => (v === undefined ? null : v);
+    const parts = (parse, aliases) => {
+      const map = {};
+      for (const sc of ((parse && parse.scenes) || [])) {
+        for (const o of (sc.cues || [])) {
+          const raw = o.raw !== undefined ? o.raw : (o.character !== undefined ? o.character : '');
+          const pid = partOf(raw, aliases);
+          const a = o.anchor || null;
+          if (!hasOwn(map, pid)) map[pid] = [];
+          map[pid].push({ cue_string: o.raw !== undefined ? o.raw : '', source_doc: a ? nv(a.source_doc) : null,
+            page: a ? nv(a.page) : null, anchor: (a && Object.keys(a).length) ? a : null, scene: nv(sc.scene) });
+        }
+      }
+      return map;
+    };
+
+    // the cue GATE: semantic (stop words, furniture, trailing glyphs, size)
+    // and charset (strict class after the two ruled trailing admissions)
+    const stripAdmitted = cue => {
+      let c = cue;
+      const m = SUFFIX_TAIL.exec(c);
+      if (m && suffixes.has(m[1].replace(/\./g, ''))) c = c.slice(0, m.index).replace(/\s+$/, '');
+      if (numberedTailRe) c = c.replace(numberedTailRe, '');
+      return c.replace(/\s+$/, '');
+    };
+    const cueCharsetOk = cue => { const rest = stripAdmitted(String(cue || '')); return !!rest && /^[A-Z0-9 .'\-]+$/.test(rest); };
+    const cueSemanticOk = cue => {
+      cue = String(cue || '');
+      if (!cue || nonCharacter.has(cue) || furnitureRe.test(cue)) return false;
+      if (rejectTrailing.some(g => g && cue.endsWith(g))) return false;
+      if (cpLen(cue) < 2) return false;
+      const words = cue.split(/\s+/).filter(Boolean);
+      if (words.length < 1 || words.length > 4) return false;
+      if (words.length >= 2 && words.some(w => stopWords.has(w))) return false;
+      if (cpLen(cue) > 30) return false;
+      return true;
+    };
+    const cueGateOk = cue => cueSemanticOk(cue) && cueCharsetOk(cue);
+    // why a name failed the gate (this bench's never-silent rail; vocabulary
+    // follows the hub's classify_cue_reject reasons)
+    const cueRejectReason = cue => {
+      cue = String(cue || '');
+      if (!cue) return 'empty';
+      if (nonCharacter.has(cue)) return 'transition/furniture';
+      if (furnitureRe.test(cue)) return 'numbered furniture';
+      const tg = rejectTrailing.find(g => g && cue.endsWith(g));
+      if (tg) return "trailing '" + tg + "'";
+      if (cpLen(cue) < 2) return 'single glyph';
+      const words = cue.split(/\s+/).filter(Boolean);
+      if (words.length > 4) return 'wide (' + words.length + ' words)';
+      const sw = words.length >= 2 ? words.find(w => stopWords.has(w)) : undefined;
+      if (sw) return "word '" + sw + "'";
+      if (cpLen(cue) > 30) return 'long (' + cpLen(cue) + ' chars)';
+      const rest = stripAdmitted(cue);
+      if (!rest) return 'charset (nothing left after the admitted shapes)';
+      const bad = Array.from(rest).find(ch => !/[A-Z0-9 .'\-]/.test(ch));
+      if (bad !== undefined) return "charset '" + bad + "'";
+      return null;
+    };
+
+    // split_dual_header (issue #69): words = [[text, x0, x1], ...] in x order
+    const splitDualHeader = words => {
+      const minGap = (policy.dual_dialogue && policy.dual_dialogue.min_gap_pt != null) ? policy.dual_dialogue.min_gap_pt : 40;
+      if (!words || words.length < 2) return null;
+      const wide = [];
+      for (let k = 0; k < words.length - 1; k++) if (words[k + 1][1] - words[k][2] > minGap) wide.push(k);
+      if (wide.length !== 1) return null;
+      const k = wide[0], lw = words.slice(0, k + 1), rw = words.slice(k + 1);
+      const left = lw.map(w => w[0]).join(' ').trim(), right = rw.map(w => w[0]).join(' ').trim();
+      for (const half of [left, right]) {
+        if (half.endsWith(':')) return null; // raw colon-terminated halves are list labels
+        const cue = normCue(half);
+        if (!cue || !cueSemanticOk(cue) || !cueCharsetOk(cue)) return null;
+      }
+      return [left, right, (lw[0][1] + rw[0][1]) / 2];
+    };
+
+    // burn-in signal 2 arithmetic (issue #16): words carry {text, x0, x1,
+    // bottom, top} in top-left extractor space; the cell flips to spec 3.5
+    // anchor space here, at the boundary, with floor as the pinned quantizer
+    const burn = policy.burn_in || {};
+    const grid = burn.repeat_grid_pt != null ? burn.repeat_grid_pt : 24;
+    const wordCell = (w, pageHeight, g) => { const G = g || grid; return [Math.floor(w.x0 / G), Math.floor((pageHeight - w.bottom) / G)]; };
+    const repeatThreshold = n => Math.max(burn.repeat_min_pages != null ? burn.repeat_min_pages : 4,
+      Math.ceil(n * (burn.repeat_page_fraction != null ? burn.repeat_page_fraction : 0.5)));
+    const detectRepeatedBurnin = (pagesWords, pageHeights) => {
+      const threshold = repeatThreshold(pagesWords.length);
+      const keyOf = (w, h) => { const c = wordCell(w, h); return JSON.stringify([String(w.text).trim(), c[0], c[1]]); };
+      const seenOn = new Map();
+      pagesWords.forEach((words, pi) => {
+        const h = pageHeights[pi];
+        for (const w of words) { const k = keyOf(w, h); let st = seenOn.get(k); if (!st) seenOn.set(k, st = new Set()); st.add(pi); }
+      });
+      const repeated = new Set();
+      for (const [k, st] of seenOn) if (st.size >= threshold) repeated.add(k);
+      return pagesWords.map((words, pi) => {
+        const h = pageHeights[pi];
+        const groups = new Map();
+        words.forEach((w, wi) => {
+          if (!repeated.has(keyOf(w, h))) return;
+          const yb = wordCell(w, h)[1];
+          let g = groups.get(yb); if (!g) groups.set(yb, g = []); g.push(wi);
+        });
+        const drop = new Set();
+        for (const [yb, wis] of groups) {
+          let rightmost = null;
+          for (const w of words) if (wordCell(w, h)[1] === yb && (rightmost === null || w.x0 > rightmost.x0)) rightmost = w;
+          if (rightmost && PAGE_TOKEN.test(String(rightmost.text).trim())) continue; // running header, never burn-in
+          const joined = wis.slice().sort((a, b) => words[a].x0 - words[b].x0).map(i => String(words[i].text)).join(' ');
+          if (/[a-z]/.test(joined)) for (const i of wis) drop.add(i);
+        }
+        return Array.from(drop).sort((a, b) => a - b);
+      });
+    };
+    return { version: policy.policy_version, data: policy, normalizeText, normCue, fold, foldCandidates, partOf, parts,
+      cueCharsetOk, cueSemanticOk, cueGateOk, cueRejectReason, splitDualHeader, wordCell, repeatThreshold, detectRepeatedBurnin };
+  }
+  // The compiled policy for this engine instance (set by createSidesEngine).
+  let POL = null;
+  const pol = () => { if (!POL) throw new Error('scriptparse policy not compiled: construct the engine with createSidesEngine({ pdfjsLib, PDFLib, policy })'); return POL; };
+
   // ---------- character extraction ----------
   // A cue like "SAM", "SAM (CONT'D)", "SAM (V.O.) *" is all one character: SAM.
-  // Trailing revision asterisks cluster onto cue lines; parentheticals are
-  // annotations, not identity.
-  function normalizeCueName(text) {
-    let t = String(text || '').replace(/\*/g, ' ');
-    t = t.replace(/\s*\([^)]*\)/g, ' ');       // (CONT'D) (V.O.) (O.S.) (ON PHONE)...
-    t = t.replace(/[.,:;]+\s*$/, '');
-    return t.replace(/\s+/g, ' ').trim().toUpperCase();
-  }
-  // Furniture that can pass the caps/position tests but is never a character.
-  // Names may contain '#' (MERC #1), '/' (GIRLS/CASSIDY) and function words
-  // (ELEANOR FROM HR) — no stop-word filtering.
-  const NOT_A_NAME = /^(CUT TO|SMASH CUT|DISSOLVE|FADE (IN|OUT|TO)|MATCH CUT|TIME CUT|INTERCUT|CONTINUED|OMITTED|MONTAGE|END OF|THE END|INSERT|CHYRON|SUPER|TITLE|ANGLE ON|CLOSE ON|BACK TO)\b/;
-  const NAME_CHARSET = /^[A-Z0-9#/&'’.\- ]+$/;
-  const isPlausibleName = n =>
-    !!n && /[A-Z]/.test(n) && NAME_CHARSET.test(n) &&
-    !NOT_A_NAME.test(n) && n.split(' ').length <= 8;
+  // Identity is the hub's seating layer (norm_cue: parentheticals and brackets
+  // stripped, trailing [.:] stripped, adjacent duplicate words collapsed,
+  // uppercase) after the LOCAL revision-mark strip: `*` glyphs are margin
+  // furniture that clusters onto cue lines, and both engines hard-code '*'
+  // pending scriptparse #25. Used everywhere a name is compared (blocks,
+  // highlights, enlargeOnly, .sceneline reconcile).
+  function normalizeCueName(text) { return pol().normCue(String(text || '').replace(/\*/g, ' ')); }
+  // The shared name gate (semantic + charset) on the normalized name. What it
+  // rails is never silent: see collectRejectedCues.
+  const cueGateOk = n => !!n && pol().cueGateOk(n);
 
   // Aggregate cue-led blocks (built by classifyPage) into unique character
   // names with dialogue-line counts. The dialogue-follow requirement (a block
@@ -172,19 +383,46 @@
       if (!P.lines.some(l => l.cls === 'dialogue')) continue;
       for (const B of (P.blocks || [])) {
         const dial = B.lines.filter(l => l.cls === 'dialogue').length;
-        if (!dial || !isPlausibleName(B.name)) continue;
+        if (!dial || !cueGateOk(B.name)) continue;
         const e = get(B.name);
         if (!e.firstPage) e.firstPage = P.index;
         seenOn(e, P.index);
         e.lines += dial; e.blocks++;
       }
-      // dual-dialogue cue rows: surface the names for user review (never let
-      // them corrupt the main list — they merge if the name already exists)
-      for (const n of (P.dualNames || [])) {
-        const e = get(n);
-        if (!e.firstPage) e.firstPage = P.index;
-        seenOn(e, P.index);
-        e.dual = true;
+      // dual-dialogue headers (parted by the shared splitter; both halves
+      // already passed the gate): surface the names for user review, with the
+      // rows beneath attributed by the column boundary (they merge if the
+      // name already exists; dual blocks are still never enlarged/painted)
+      for (const D of (P.dualBlocks || [])) {
+        for (const side of ['left', 'right']) {
+          const n = D[side];
+          if (!n) continue;
+          const e = get(n);
+          if (!e.firstPage) e.firstPage = P.index;
+          seenOn(e, P.index);
+          e.dual = true; e.lines += D[side + 'Lines'] || 0; e.blocks++;
+        }
+      }
+    }
+    return [...map.values()].sort((a, b) => b.lines - a.lines || (a.name < b.name ? -1 : 1));
+  }
+
+  // Never-silent rail: cue-led blocks WITH dialogue whose normalized name the
+  // shared gate refuses. Geometry is ours, so they still enlarge in
+  // All-dialogue mode; identity is the hub's, so they never reach the
+  // character list unasked. The report says so, with the gate's reason
+  // (the #37 doctrine: a missing character must never pass unremarked).
+  function collectRejectedCues(pages) {
+    const map = new Map();
+    for (const P of pages) {
+      if (!P.lines.some(l => l.cls === 'dialogue')) continue;
+      for (const B of (P.blocks || [])) {
+        const dial = B.lines.filter(l => l.cls === 'dialogue').length;
+        if (!dial || !B.name || cueGateOk(B.name)) continue;
+        let e = map.get(B.name);
+        if (!e) map.set(B.name, e = { name: B.name, reason: pol().cueRejectReason(B.name) || 'gate', lines: 0, blocks: 0, pages: [] });
+        e.lines += dial; e.blocks++;
+        if (!e.pages.includes(P.index)) e.pages.push(P.index);
       }
     }
     return [...map.values()].sort((a, b) => b.lines - a.lines || (a.name < b.name ? -1 : 1));
@@ -364,33 +602,92 @@
     return out;
   }
 
+  // scriptparse burn-in signal 2 (policy `burn_in`, issue #16 ruling; the
+  // residual #37 exposure on actor sides): text repeating at the same
+  // quantized position on enough pages, in a row group that carries a
+  // lowercase letter, is a per-recipient stamp. Stripped from LINE-BUILDING
+  // only (classification, character extraction, reader mode): the rewriter
+  // still sees the raw stream, so the stamp's bytes stay byte-identical in
+  // the output. "Words" are this engine's pdf.js items (a glyph-per-op stamp
+  // strips glyph by glyph, which is the hub's "before line clustering"
+  // ordering by construction); `bottom` is converted from anchor space so the
+  // shared cell arithmetic applies exactly as pinned. Signal 1 (rotated runs)
+  // is applied in extract(). Never silent: returns a rail for the report.
+  function stripRepeatedBurnIn(pages) {
+    const P0 = pol();
+    const pagesWords = pages.map(P => P.live.map(it => ({ text: it.str, x0: it.x, x1: it.x + it.w, bottom: P.height - it.y, top: P.height - it.y - (it.size || 0), it })));
+    const strips = P0.detectRepeatedBurnin(pagesWords, pages.map(P => P.height));
+    const rail = new Map();
+    let runs = 0, pagesHit = 0;
+    strips.forEach((idxs, pi) => {
+      if (!idxs.length) return;
+      const P = pages[pi];
+      const drop = new Set(idxs.map(i => pagesWords[pi][i].it));
+      const byRow = new Map();
+      for (const i of idxs) {
+        const w = pagesWords[pi][i], yb = P0.wordCell(w, P.height)[1];
+        if (!byRow.has(yb)) byRow.set(yb, []);
+        byRow.get(yb).push(w);
+      }
+      for (const ws of byRow.values()) {
+        ws.sort((a, b) => a.x0 - b.x0);
+        let text = '';
+        for (let i = 0; i < ws.length; i++) {
+          const gap = i ? ws[i].x0 - ws[i - 1].x1 : 0;
+          text += (i && gap > Math.max(1.5, 0.25 * (ws[i - 1].it.size || 12)) ? ' ' : '') + ws[i].text;
+        }
+        text = text.replace(/\s+/g, ' ').trim();
+        let e = rail.get(text);
+        if (!e) rail.set(text, e = { text, pages: 0, firstPage: P.index });
+        e.pages++;
+      }
+      P.live = P.live.filter(it => !drop.has(it));
+      P.lines = buildLines(P.live);
+      P.burnStripped = idxs.length; runs += idxs.length; pagesHit++;
+    });
+    return { runs, pages: pagesHit, rail: [...rail.values()] };
+  }
+
   function classifyPage(P, cal) {
     // walk top -> bottom; dialogue = in a block opened by a character cue.
     // Also collects the cue-led blocks (P.blocks) used for character
     // extraction and highlighting, and dual-cue names (P.dualNames).
-    let inBlock = false, dualMode = false, prevY = null, cur = null;
-    P.blocks = []; P.dualNames = [];
+    let inBlock = false, dualMode = false, dualCur = null, prevY = null, cur = null;
+    P.blocks = []; P.dualNames = []; P.dualBlocks = [];
     for (const L of P.lines) {
       if (prevY !== null && prevY - L.y > 28) { inBlock = false; cur = null; } // big vertical gap
       prevY = L.y;
       // a cue with a revision star in the margin is 2 segments but NOT dual:
       // dual detection looks at body segments only
       const bodySegs = L.segments.filter(sg => sg.x0 < P.width - 80);
-      const dualCueRow = bodySegs.length >= 2 &&
-        bodySegs.every(s => capsy(s.text) && s.text.trim().length <= 30);
-      if (dualCueRow) {
+      // dual-dialogue header (scriptparse #69 ruling, shared splitter): an
+      // all-caps body row that parts at exactly ONE gap wider than
+      // dual_dialogue.min_gap_pt into two halves that each pass the full cue
+      // gate. Our segments are already word-joined and gap-split (buildLines),
+      // so they are the splitter's "words". Scene numbers printed in both
+      // margins of a slugline are geometry, never names: filtered here.
+      const split = (bodySegs.length >= 2 && bodySegs.every(s => capsy(s.text)))
+        ? pol().splitDualHeader(bodySegs.map(s => [s.text, s.x0, s.x1])) : null;
+      if (split) {
         L.cls = 'dual'; dualMode = true; inBlock = false; cur = null; P.hasDual = true;
-        for (const s of bodySegs) {
-          const n = normalizeCueName(s.text);
-          // scene numbers print in both margins of a slugline and read as a
-          // "dual cue" row; a spaceless letter+digit run is never a character
-          if (isPlausibleName(n) && !/^[A-Z]{0,3}\d+[A-Z0-9]*$/.test(n)) P.dualNames.push(n);
-        }
+        const names = [split[0], split[1]].map(t => normalizeCueName(t))
+          .map(n => (n && !/^[A-Z]{0,3}\d+[A-Z0-9]*$/.test(n)) ? n : '');
+        dualCur = { left: names[0], right: names[1], boundary: split[2], leftLines: 0, rightLines: 0 };
+        P.dualBlocks.push(dualCur);
+        for (const n of names) if (n) P.dualNames.push(n);
         continue;
       }
       if (dualMode) {
-        if (L.segments.length >= 2) { L.cls = 'dual'; P.hasDual = true; continue; }
-        dualMode = false;
+        if (L.segments.length >= 2) {
+          L.cls = 'dual'; P.hasDual = true;
+          if (dualCur) { // attribute the row by the column boundary (midpoint of the two x starts)
+            const bs = L.segments.filter(sg => sg.x0 < P.width - 80);
+            if (bs.some(sg => sg.x1 < dualCur.boundary)) dualCur.leftLines++;
+            if (bs.some(sg => sg.x0 > dualCur.boundary)) dualCur.rightLines++;
+          }
+          continue;
+        }
+        dualMode = false; dualCur = null;
       }
       if (isCueLine(L, [cal.cueX - 12, cal.cueX + 12], P.width)) {
         L.cls = 'cue'; inBlock = true;
@@ -1305,7 +1602,8 @@
   }
 
   // ---------- public API ----------
-  return function createSidesEngine({ pdfjsLib, PDFLib }) {
+  return function createSidesEngine({ pdfjsLib, PDFLib, policy }) {
+    POL = compilePolicy(policy);
 
     async function extract(bytes) {
       // pdf.js 4.2+/5.x iterates its text-content ReadableStream with `for await`.
@@ -1387,11 +1685,16 @@
     async function analyze(bytes) {
       const { pages, totalChars } = await extract(bytes);
       if (totalChars < 40) throw scannedError();
+      for (const P of pages) P.live = P.items;
+      const burn = stripRepeatedBurnIn(pages);
       const cal = calibrate(pages);
       if (cal) for (const P of pages) classifyPage(P, cal);
       return {
         calibration: cal,
+        policyVersion: POL.version,
         characters: cal ? collectCharacters(pages) : [],
+        rejectedCues: cal ? collectRejectedCues(pages) : [],
+        burnIns: burn.rail,
         pages: pages.map(P => ({ page: P.index, dialogueLines: P.lines.filter(l => l.cls === 'dialogue').length, hasDual: !!P.hasDual })),
       };
     }
@@ -1662,6 +1965,7 @@
         return perPage;
       };
 
+      for (const P of pages) P.live = P.items; // the items line-building currently sees
       let greyPages = 0, greyRuns = 0;
       try {
         const greyRects = collectGreyRects();
@@ -1676,6 +1980,7 @@
           if (live.length !== P.items.length) {
             P.greyExcluded = P.items.length - live.length;
             greyRuns += P.greyExcluded; greyPages++;
+            P.live = live;
             P.lines = buildLines(live);
           }
         }
@@ -1691,21 +1996,25 @@
       // (above). Declared exclusion of an exact string, NOT content-based
       // classification: the geometric-detection law stands. Matches whole
       // items and whole gap-joined segments; bytes stay untouched.
+      // scriptparse burn-in signal 2: repeated-position stamps (policy-driven,
+      // corpus-pinned) leave line-building before calibration; see
+      // stripRepeatedBurnIn. Runs after the grey exclusion, before the
+      // declared-text seam below.
+      const burn = stripRepeatedBurnIn(pages);
       const normWm = s => String(s || '').replace(/\s+/g, ' ').trim().toUpperCase();
       const wmSet = new Set([].concat(opts.watermarkText || []).map(normWm).filter(Boolean));
       let wmRuns = 0, wmPages = 0;
       if (wmSet.size) {
         for (const P of pages) {
-          let live = (P.greyExcluded ? P.lines.flatMap(L => L.items) : P.items)
-            .filter(it => !wmSet.has(normWm(it.str)));
+          let live = P.live.filter(it => !wmSet.has(normWm(it.str)));
           let lines = buildLines(live);
           const drop = new Set();
           for (const L of lines) for (const sg of L.segments) {
             if (wmSet.has(normWm(sg.text))) for (const it of sg.items) drop.add(it);
           }
           if (drop.size) { live = live.filter(it => !drop.has(it)); lines = buildLines(live); }
-          const removed = (P.greyExcluded ? P.lines.reduce((n, L) => n + L.items.length, 0) : P.items.length) - live.length;
-          if (removed) { wmRuns += removed; wmPages++; P.lines = lines; }
+          const removed = P.live.length - live.length;
+          if (removed) { wmRuns += removed; wmPages++; P.live = live; P.lines = lines; }
         }
       }
 
@@ -1736,15 +2045,24 @@
       const colW = Math.min(300, Math.max(200, quantile(widths, 0.9) || 252));
       cal.colW = colW;
       const anchorC = cal.dialX + colW / 2; // uniform-scale anchor (see pageScale)
+      report.policyVersion = POL.version;
       report.characters = collectCharacters(pages);
       report.sluglines = collectSluglines(pages); // for .sceneline draft-mismatch subset check
-      // Never-silent: if rotated watermark/burn-in text was present, say so.
-      // The guard above recovers cues the watermark would have hidden, but a
-      // NON-rotated stamp (repeated-position burn-in) is not caught here — that
-      // strip is scriptparse policy data and arrives with package adoption — so
-      // flag it rather than let a missing character pass unremarked (#37).
+      // Never-silent rails (#37 doctrine): what the shared gate kept off the
+      // list, and what the two burn-in signals stripped from detection.
+      report.rejectedCues = collectRejectedCues(pages);
+      if (report.rejectedCues.length) {
+        report.warnings.push('Kept off the character list by the shared name rule (scriptparse policy ' + POL.version + '): '
+          + report.rejectedCues.map(r => r.name + ' (' + r.reason + ', ' + r.lines + ' line' + (r.lines === 1 ? '' : 's') + ')').join('; ')
+          + '. Their dialogue still enlarges in All-dialogue mode; add the name by hand to select or highlight it.');
+      }
+      report.burnIns = burn.rail;
+      if (burn.runs) {
+        report.warnings.push('Repeated-position burn-in text found on ' + burn.pages + ' page' + (burn.pages === 1 ? '' : 's') + ' (' + burn.runs + ' run' + (burn.runs === 1 ? '' : 's') + ') and excluded from character detection: '
+          + burn.rail.map(b => '“' + b.text + '”').join(', ') + '. The stamp itself is untouched in the output.');
+      }
       const rotRuns = pages.reduce((n, P) => n + (P.rotatedItems || 0), 0);
-      if (rotRuns) report.warnings.push('Rotated watermark/burn-in text detected (' + rotRuns + ' run' + (rotRuns === 1 ? '' : 's') + ') and excluded from character detection, so cues beneath it are still found. If a character still looks missing, the copy may carry a non-rotated stamp watermark — double-check the character list against the script.');
+      if (rotRuns) report.warnings.push('Rotated watermark/burn-in text detected (' + rotRuns + ' run' + (rotRuns === 1 ? '' : 's') + ') and excluded from character detection, so cues beneath it are still found.');
       // the character name grows with its block: a block's cue is eligible
       // whenever the block has eligible dialogue (a bare cue-shaped label
       // with no dialogue under it never scales)
@@ -2233,6 +2551,10 @@
       process, extract, analyze, PALETTE,
       // .sceneline interchange (spec v2)
       parseSceneline, unionShows, reconcile, buildSidesBlock, buildScenelineExport, normalizeCueName,
+      // the shared name gate on a normalized name, and the compiled scriptparse
+      // policy interpreter itself (tools/conformance_check.mjs runs the hub's
+      // corpus against it; the UI reads .version)
+      cueGateOk, policy: POL,
     };
   };
 });

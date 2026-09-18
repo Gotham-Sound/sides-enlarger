@@ -247,6 +247,9 @@
 <script>window.__PDFJS_B64__ = "/*__PDFJS_B64__*/";</script>
 <script>window.__PDFWORKER_B64__ = "/*__PDFWORKER_B64__*/";</script>
 <script>/*__PDFLIB__*/</script>
+<script>/* scriptparse policy data (Gotham-Sound/scriptparse policy.json): the shared identity
+   rulings this engine interprets. Vendored at build time; never fetched. */
+var SCRIPTPARSE_POLICY = /*__POLICY__*/;</script>
 <script>/*__ENGINE__*/</script>
 <script>
 // pdf.js v5 is ESM-only. The classic script below defines the whole app as
@@ -256,7 +259,7 @@
 // CSP's `script-src blob:` — and then boots the app.
 window.__bootSides__ = function (pdfjs) {
   'use strict';
-  var engine = createSidesEngine({ pdfjsLib: pdfjs, PDFLib: window.PDFLib });
+  var engine = createSidesEngine({ pdfjsLib: pdfjs, PDFLib: window.PDFLib, policy: SCRIPTPARSE_POLICY });
   var PALETTE = engine.PALETTE;
 
   // ---- who am I: #laura -> per-person preferences (nothing else is stored).

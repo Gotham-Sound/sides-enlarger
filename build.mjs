@@ -18,6 +18,9 @@ const pdfjsB64 = fs.readFileSync(path.join(root, 'node_modules/pdfjs-dist/legacy
 const workerB64 = fs.readFileSync(path.join(root, 'node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs')).toString('base64');
 const logoB64 = fs.readFileSync(path.join(root, 'assets/gothamsound_green-and-black.png')).toString('base64');
 const version = JSON.parse(read('package.json')).version;
+// the scriptparse policy data (identity rulings as versioned JSON, vendored
+// byte-identical from the hub; tools/conformance_check.mjs verifies it)
+const policyJson = JSON.stringify(JSON.parse(read('policy/scriptparse-policy.json')));
 
 const template = read('ui_template.html');
 const out = template
@@ -25,6 +28,7 @@ const out = template
   .replace('/*__PDFWORKER_B64__*/', () => workerB64)
   .replace('/*__PDFLIB__*/', () => safe(read('node_modules/pdf-lib/dist/pdf-lib.min.js')))
   .replace('/*__ENGINE__*/', () => safe(read('engine.js')))
+  .replace('/*__POLICY__*/', () => safe(policyJson))
   .replace('__LOGO_B64__', () => logoB64)
   .replace(/__VERSION__/g, () => version);
 

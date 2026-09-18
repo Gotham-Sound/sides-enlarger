@@ -35,9 +35,11 @@ LEAD = 12
 TOL_POS = 0.7
 
 
-def get_lines(page):
-    """visual lines: [{y, x0, x1, text, spans:[(x0,y_origin,x1,size,text)], segs}]"""
+def get_lines(page, burn=None):
+    """visual lines: [{y, x0, x1, text, spans:[(x0,y_origin,x1,size,text)], segs}]
+    `burn` = the page's stripped-span keys from burn_spans() (signal 2)"""
     greys = grey_boxes(page)
+    burn_keys = (burn or {}).get("keys", set())
     d = page.get_text("dict")
     spans = []
     for blk in d["blocks"]:
@@ -58,6 +60,11 @@ def get_lines(page):
                 # omitted context, never classified (and never asserted scaled)
                 x0g, _, x1g, _ = sp["bbox"]
                 if greys and in_grey((x0g + x1g) / 2, sp["origin"][1] - 3, greys):
+                    continue
+                # mirror the engine's burn-in signal 2 strip (scriptparse
+                # policy burn_in): repeated-position stamps never enter
+                # line-building
+                if (round(sp["bbox"][0], 2), round(sp["origin"][1], 2), t) in burn_keys:
                     continue
                 x0, y0, x1, y1 = sp["bbox"]
                 spans.append({"x0": x0, "x1": x1, "y": round(sp["origin"][1], 2),
@@ -159,12 +166,202 @@ def is_cue(L, lo, hi, pageW=0):
             and not re.search(r"(CUT TO|FADE (IN|OUT)|DISSOLVE)", text))
 
 
+# ---- scriptparse policy mirror (federation Phase 1) ----
+# The verifier runs the hub's Python REFERENCE code (build_matrix.py /
+# policy.py, copied verbatim where pure) on the vendored policy data, so the
+# engine's JS interpreter is checked against the reference by construction.
+import json as _json
+import math as _math
+import os as _os
+
+_POLICY = _json.load(open(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..",
+                                        "policy", "scriptparse-policy.json"), encoding="utf-8"))
+_NON_CHARACTER = frozenset(_POLICY["transitions_non_character"])
+_BAD_WORDS = frozenset(_POLICY["cue_stop_words"])
+_REJECT_TRAILING = tuple(_POLICY.get("cue_reject_trailing", ["-"]))
+_NAME_SUFFIXES = frozenset(s.replace(".", "").upper() for s in _POLICY.get("name_suffixes", []))
+_MARKER = _POLICY.get("numbered_part_marker", "#")
+_SUFFIX_TAIL_RE = re.compile(r",\s*(?P<suffix>[A-Z][A-Z.]*)$")
+_NUMBERED_TAIL_RE = re.compile(re.escape(_MARKER) + r"\d+$")
+_FURNITURE_CUE_RE = re.compile(
+    r"^(?:" + "|".join(_POLICY["furniture_numbered_words"]) + r")\s+"
+    r"(?:" + re.escape(_MARKER) + r"?\d+[A-Z]?|" + "|".join(_POLICY["furniture_number_words"]) + r")$")
+_PAGE_TOKEN_RE = re.compile(r"^[A-Z]?\d+[A-Z]?\.$")
+
+
+def _normalize_text(s):
+    s = (s or "").strip()
+    s = s.replace("\u201c", "").replace("\u201d", "").replace('"', "")
+    s = s.replace("\u2019", "'").replace("\u2018", "'")
+    s = re.sub(r"\[[^\]]+\]", "", s)
+    s = re.sub(r"\([^)]*\)", "", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _hub_norm_cue(raw):
+    text = _normalize_text(raw).upper()
+    text = re.sub(r"[.:]+$", "", text).strip()
+    deduped = []
+    for word in text.split():
+        if not deduped or deduped[-1] != word:
+            deduped.append(word)
+    return " ".join(deduped)
+
+
 def norm_cue(t):
-    """mirror of the engine's normalizeCueName"""
-    t = re.sub(r"\*", " ", t or "")
-    t = re.sub(r"\s*\([^)]*\)", " ", t)          # (CONT'D) (V.O.) etc.
-    t = re.sub(r"[.,:;]+\s*$", "", t)
-    return re.sub(r"\s+", " ", t).strip().upper()
+    """mirror of the engine's normalizeCueName: the local revision-star strip,
+    then the hub's norm_cue (the seating layer)"""
+    return _hub_norm_cue(re.sub(r"\*", " ", t or ""))
+
+
+def _strip_admitted_shapes(cue):
+    m = _SUFFIX_TAIL_RE.search(cue)
+    if m and m.group("suffix").replace(".", "") in _NAME_SUFFIXES:
+        cue = cue[:m.start()].rstrip()
+    return _NUMBERED_TAIL_RE.sub("", cue).rstrip()
+
+
+def cue_charset_ok(cue):
+    rest = _strip_admitted_shapes(cue)
+    return bool(rest) and bool(re.fullmatch(r"[A-Z0-9 .'\-]+", rest))
+
+
+def cue_semantic_ok(cue):
+    if not cue or cue in _NON_CHARACTER or _FURNITURE_CUE_RE.match(cue):
+        return False
+    if cue.endswith(_REJECT_TRAILING):
+        return False
+    if len(cue) < 2:
+        return False
+    words = cue.split()
+    if not (1 <= len(words) <= 4):
+        return False
+    if len(words) >= 2 and any(word in _BAD_WORDS for word in words):
+        return False
+    if len(cue) > 30:
+        return False
+    return True
+
+
+def cue_gate_ok(cue):
+    return bool(cue) and cue_semantic_ok(cue) and cue_charset_ok(cue)
+
+
+def split_dual_header(words):
+    """the hub's split_dual_header: words = [(text, x0, x1), ...] in x order"""
+    min_gap = _POLICY.get("dual_dialogue", {}).get("min_gap_pt", 40)
+    if len(words) < 2:
+        return None
+    wide = [k for k in range(len(words) - 1) if words[k + 1][1] - words[k][2] > min_gap]
+    if len(wide) != 1:
+        return None
+    k = wide[0]
+    left_ws, right_ws = words[:k + 1], words[k + 1:]
+    left = " ".join(w[0] for w in left_ws).strip()
+    right = " ".join(w[0] for w in right_ws).strip()
+    for half in (left, right):
+        if half.endswith(":"):
+            return None
+        cue = _hub_norm_cue(half)
+        if not cue or not cue_semantic_ok(cue) or not cue_charset_ok(cue):
+            return None
+    return left, right, (left_ws[0][1] + right_ws[0][1]) / 2.0
+
+
+def _word_cell(w, page_height, grid):
+    return (_math.floor(w["x0"] / grid), _math.floor((page_height - w["bottom"]) / grid))
+
+
+def detect_repeated_burnin(pages_words, page_heights):
+    """the hub's _detect_repeated_burnin (signal 2): per page, the set of word
+    indices to strip"""
+    rule = _POLICY.get("burn_in", {})
+    grid = rule.get("repeat_grid_pt", 24)
+    n_pages = len(pages_words)
+    threshold = max(rule.get("repeat_min_pages", 4), _math.ceil(n_pages * rule.get("repeat_page_fraction", 0.5)))
+    seen_on = {}
+    for pi, words in enumerate(pages_words):
+        h = page_heights[pi]
+        for w in words:
+            key = (w["text"].strip(),) + _word_cell(w, h, grid)
+            seen_on.setdefault(key, set()).add(pi)
+    repeated = {k for k, pages in seen_on.items() if len(pages) >= threshold}
+    strip = []
+    for pi, words in enumerate(pages_words):
+        h = page_heights[pi]
+        groups = {}
+        for wi, w in enumerate(words):
+            key = (w["text"].strip(),) + _word_cell(w, h, grid)
+            if key in repeated:
+                groups.setdefault(_word_cell(w, h, grid)[1], []).append(wi)
+        drop = set()
+        for yb, wis in groups.items():
+            line_words = [w for w in words if _word_cell(w, h, grid)[1] == yb]
+            rightmost = max(line_words, key=lambda w: w["x0"])
+            if _PAGE_TOKEN_RE.match(rightmost["text"].strip()):
+                continue
+            joined = " ".join(words[wi]["text"] for wi in sorted(wis, key=lambda i: words[i]["x0"]))
+            if re.search(r"[a-z]", joined):
+                drop.update(wis)
+        strip.append(drop)
+    return strip
+
+
+def burn_spans(doc):
+    """mirror of the engine's stripRepeatedBurnIn at pymupdf span granularity:
+    per page, (a) the set of span keys to exclude from line-building and (b)
+    their bboxes (so word-level checks can skip them). Spans are this
+    verifier's "words": the same (text, cell) repeat logic strips the same
+    stamp regions the engine strips glyph-by-glyph or word-by-word."""
+    pages_words, heights, keys = [], [], []
+    for page in doc:
+        rot = rot_ids(page)
+        greys = grey_boxes(page)
+        words, pkeys = [], []
+        d = page.get_text("dict")
+        for bi, blk in enumerate(d["blocks"]):
+            if blk["type"] != 0:
+                continue
+            for li, ln in enumerate(blk["lines"]):
+                if abs(ln.get("dir", (1, 0))[1]) > 0.02 or (bi, li) in rot:
+                    continue
+                for sp in ln["spans"]:
+                    t = sp["text"]
+                    if not t.strip():
+                        continue
+                    x0g, _, x1g, _ = sp["bbox"]
+                    if greys and in_grey((x0g + x1g) / 2, sp["origin"][1] - 3, greys):
+                        continue
+                    # bottom = the baseline in top-down space, so
+                    # page_height - bottom is the engine's baseline y (anchor space)
+                    words.append({"text": t, "x0": sp["bbox"][0], "x1": sp["bbox"][2],
+                                  "bottom": sp["origin"][1], "top": sp["bbox"][1], "bbox": sp["bbox"]})
+                    pkeys.append((round(sp["bbox"][0], 2), round(sp["origin"][1], 2), t))
+        pages_words.append(words)
+        heights.append(page.rect.height)
+        keys.append(pkeys)
+    strips = detect_repeated_burnin(pages_words, heights)
+    out = []
+    for pi, drop in enumerate(strips):
+        out.append({"keys": {keys[pi][i] for i in drop},
+                    "boxes": [pages_words[pi][i]["bbox"] for i in drop]})
+    return out
+
+
+_BURN_CACHE = {}
+
+
+def burn_spans_cached(doc):
+    k = id(doc)
+    if k not in _BURN_CACHE:
+        _BURN_CACHE[k] = burn_spans(doc)
+    return _BURN_CACHE[k]
+
+
+def in_burn(w, boxes):
+    """word tuple (x0,y0,x1,y1,text,...) inside any stripped span bbox"""
+    cx, cy = (w[0] + w[2]) / 2, (w[1] + w[3]) / 2
+    return any(b[0] - 1 <= cx <= b[2] + 1 and b[1] - 1 <= cy <= b[3] + 1 for b in boxes)
 
 
 def collect_blocks(lines):
@@ -184,7 +381,8 @@ def collect_blocks(lines):
 
 
 def classify_doc(doc):
-    pages_lines = [get_lines(p) for p in doc]
+    burn = burn_spans_cached(doc)
+    pages_lines = [get_lines(p, burn[i]) for i, p in enumerate(doc)]
     widths = [p.rect.width for p in doc]
     cue_xs = [L["x0"] for lines, W in zip(pages_lines, widths) for L in lines if is_cue(L, 200, 340, W)]
     assert len(cue_xs) >= 2, "verifier could not find character cues"
@@ -209,7 +407,10 @@ def classify_doc(doc):
                 in_block = False
             prev_y = L["y"]
             body_segs = [s for s in L["segs"] if s["x0"] < W - 80]
-            if len(body_segs) >= 2 and all(capsy(s["text"]) and len(s["text"].strip()) <= 30 for s in body_segs):
+            # dual-dialogue header: the shared splitter on the all-caps body
+            # segments (each segment is a splitter "word"), mirroring the engine
+            if (len(body_segs) >= 2 and all(capsy(s["text"]) for s in body_segs)
+                    and split_dual_header([(s["text"], s["x0"], s["x1"]) for s in body_segs]) is not None):
                 L["cls"], dual, in_block = "dual", True, False
                 continue
             if dual:
@@ -303,11 +504,13 @@ def reader_check(b, a, report, fails, notes):
     import collections
     before_cls = classify_doc(b)
     mark_furniture(before_cls, [p.rect.height for p in b])
+    burn_b = burn_spans_cached(b)
     need = collections.Counter()
     allb = collections.Counter()
     for pi in range(len(b)):
         W = b[pi].rect.width
         lines = before_cls[pi]
+        burn_boxes = burn_b[pi]["boxes"]
         has_dial = any(L.get("cls") == "dialogue" for L in lines)
         # rotated watermark words are dropped in reader view (identified by
         # block/line index, not geometry — a page-sized diagonal stamp's bbox
@@ -325,7 +528,8 @@ def reader_check(b, a, report, fails, notes):
         for L in keep_rows:
             row = sorted((w for w in words
                           if abs(w[3] - L["y"]) <= 5.0 and w[4].strip()
-                          and not_rotated(w, rot_b)),
+                          and not_rotated(w, rot_b)
+                          and not (burn_boxes and in_burn(w, burn_boxes))),
                          key=lambda w: w[0])
             # margin scene numbers are furniture, not body words: reader mode
             # drops/relabels them, so they must not be required. Mirror the
@@ -434,7 +638,9 @@ def main():
 
     for pi in range(len(b)):
         blines = before_cls[pi]
-        alines = get_lines(a[pi])
+        # the stamp is untouched in the output, so the BEFORE doc's stripped
+        # span keys apply to the after doc unchanged
+        alines = get_lines(a[pi], burn_spans_cached(b)[pi])
         aspans = [s for L in alines for s in L["spans"]]
         applied = report["pages"][pi]["appliedScale"] if report else None
         pinfo = report["pages"][pi] if report else {}
@@ -531,14 +737,19 @@ def main():
             bwords = b[pi].get_text("words")
             awords = a[pi].get_text("words")
             brot, arot = rot_ids(b[pi]), rot_ids(a[pi])
+            # burn-in signal-2 stamps sit on body baselines but are not body
+            # text: they leave every word-level check, like rotated words
+            bburn = burn_spans_cached(b)[pi]["boxes"]
             for L in blines:
                 if mode == "page":
                     if L.get("cls") != "dialogue":
                         continue
                 elif not line_enlarged(L):
                     continue
-                bw = sorted(w for w in bwords if abs(w[3] - L["y"]) <= 5.0 and w[0] < marginStart and not_rotated(w, brot))
-                aw = sorted(w for w in awords if abs(w[3] - L["y"]) <= 5.0 and w[0] < marginStart and not_rotated(w, arot))
+                bw = sorted(w for w in bwords if abs(w[3] - L["y"]) <= 5.0 and w[0] < marginStart and not_rotated(w, brot)
+                            and not (bburn and in_burn(w, bburn)))
+                aw = sorted(w for w in awords if abs(w[3] - L["y"]) <= 5.0 and w[0] < marginStart and not_rotated(w, arot)
+                            and not (bburn and in_burn(w, bburn)))
                 if len(bw) < 2:
                     continue
                 if len(aw) != len(bw):
@@ -572,6 +783,7 @@ def main():
             awords_e = a[pi].get_text("words")
             greys_e = grey_boxes(b[pi])
             brot_e = rot_ids(b[pi])
+            bburn_e = burn_spans_cached(b)[pi]["boxes"]
             for w in bwords_e:
                 if not w[4].strip():
                     continue
@@ -579,7 +791,8 @@ def main():
                 # excluded from enlargement: they stay put exactly, like marks
                 is_fixed = (w[0] >= marginStart or w[2] <= 70 or near_furn(w[3])
                             or (greys_e and in_grey((w[0] + w[2]) / 2, w[3] - 3, greys_e))
-                            or (brot_e and not not_rotated(w, brot_e)))
+                            or (brot_e and not not_rotated(w, brot_e))
+                            or (bburn_e and in_burn(w, bburn_e)))
                 ex0 = w[0] if (is_fixed or s_eff <= 1.001) else anchor + s_eff * (w[0] - anchor)
                 tol = 0.7 if is_fixed else 1.5
                 m = [t for t in awords_e if t[4] == w[4]

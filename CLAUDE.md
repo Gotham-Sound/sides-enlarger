@@ -40,11 +40,13 @@ there is no backend.
 index.html              BUILD OUTPUT — do not hand-edit. Regenerate with `npm run build`.
 ui_template.html        The page markup + app glue (edit this, then rebuild).
 engine.js               Core logic. Runs UNCHANGED in both browser and Node.
+policy/scriptparse-policy.json  The hub's identity policy data, vendored BYTE-IDENTICAL (injected into the engine).
 build.mjs               Inlines pdf.js + worker (base64) + pdf-lib + engine.js -> index.html
 tools/make_fixture.py   Generates a synthetic screenplay PDF (reportlab) for tests.
 tools/run_engine_node.mjs  Runs engine.js headless on a PDF (uses node_modules build).
 tools/check.py          Independent verifier (pymupdf) + side-by-side page renders.
 tools/test_sceneline.mjs  Headless acceptance tests for the .sceneline interchange.
+tools/conformance_check.mjs  Inverted-verification runner for the hub's conformance corpus (scriptparse #40).
 tools/test.sh           One-shot: fixture (and optional real PDFs) at 1.0/1.25/1.5.
 docs/sceneline-interchange-v2.md  The .sceneline interchange spec (committed, no script text).
 .nojekyll               So GitHub Pages serves index.html as-is.
@@ -99,10 +101,35 @@ renderer re-segmenting enlarged lines). It also writes
   op around its own origin grows glyphs while leaving their origins on the old
   pitch (letters crowd, word gaps shrink). Emits everything else byte-identical.
 - **Character extraction**: a cue is a geometric fact (all-caps, in the cue
-  band, dialogue-band text under it). Names are normalized ((CONT'D)/(V.O.)
-  stripped, revision `*` stripped, `#`/`/`/function words kept) and aggregated
-  with dialogue-line counts. The dialogue-follow test is the noise filter; do
-  not weaken it to catch more names.
+  band, dialogue-band text under it); the dialogue-follow test is the noise
+  filter, do not weaken it to catch more names. **Identity is NOT local** (federation
+  Phase 1, scriptparse #83, since v1.10.0): `compilePolicy` in engine.js is a JS
+  mirror of the hub's reference interpreter, driven only by the injected
+  `policy.json`, and pinned by the hub's conformance corpus
+  (`tools/conformance_check.mjs`, all consumed vector files must stay green).
+  `normalizeCueName` = the local revision-`*` strip, then the hub's `norm_cue`
+  (parentheticals/brackets stripped, trailing `[.:]` stripped, adjacent duplicate
+  words collapsed, uppercase). `cueGateOk` = the hub's semantic gate (stop words
+  AND/OR/BUT/NOR/FROM in 2+ word names, numbered furniture, transitions, trailing
+  `-`, 1..4 words, 2..30 chars) + charset gate (`[A-Z0-9 .'-]` after the two
+  admitted trailing shapes: `#N` numbered parts and `, JR/SR/II/III/IV` suffixes).
+  So `MERC #1` and `SALLY, JR` seat; `ELEANOR FROM HR`, `GIRLS/CASSIDY` and
+  `MYRON & WANDA` are railed. **Railed is never silent:** a cue-led block with
+  dialogue whose name fails the gate lands on `report.rejectedCues` with the reason
+  and a warning (it still enlarges in All-dialogue mode; the user can add the name
+  by hand). Never re-add a local name rule; a wrong ruling is a federation motion.
+- **Dual dialogue**: an all-caps body row with 2+ segments is a dual header only
+  if the hub's `splitDualHeader` says so (exactly one gap > `min_gap_pt`, both
+  halves pass the full gate; colon-terminated halves are list labels). Names
+  surface flagged `dual`, rows beneath are attributed by the column boundary for
+  the line count; dual blocks are still never enlarged or highlighted.
+- **Burn-in (two signals, both before line-building; scriptparse #16/#37):**
+  signal 1 drops rotated items in `extract()`; signal 2 (`stripRepeatedBurnIn`,
+  policy `burn_in`) drops text that repeats at the same 24pt-quantized
+  bottom-left cell on >= max(4, ceil(pages/2)) pages when the row group has a
+  lowercase letter (running headers ending in a page token are exempt). Strips
+  affect classification, the character list and reader mode ONLY; the rewriter
+  still emits the stamp bytes byte-identical. `report.burnIns` + a warning say so.
 - **Modes**: `opts.enlargeOnly` (array of names) gates the in-place scaling per
   cue-led block: unselected characters' dialogue must stay byte-identical, and
   the verifier checks it like non-dialogue. `opts.mode: 'page'` ("Everything")
@@ -221,15 +248,17 @@ import is RECONCILIATION, not skipped extraction.
 - **`'` and `"` show-operators** are decomposed so a scaled `Tm` can be injected.
 - **Inline images (`BI`)**: a stream containing them is left unscaled (guarded).
 - **Dual dialogue** and **revision-history / call-sheet tables** are left untouched
-  (may trip the dual-dialogue heuristic; that's fine — the page must stay identical).
+  (a table row may or may not read as a dual header; either way the page must stay
+  identical, and no-dialogue pages contribute no names).
 
 ## Rules for changes
 - Never commit real scripts or their renders. `.gitignore` blocks `sides/`,
   `out/`, `*.real.pdf`, `samples-private/`. The only test fixture in-repo is the
   synthetic one from `make_fixture.py`.
-- `engine.js` must stay dependency-injected (`{ pdfjsLib, PDFLib }`) and free of
-  Node-only or browser-only globals except where feature-detected (e.g.
-  `crypto.subtle`). It ships to the browser verbatim.
+- `engine.js` must stay dependency-injected (`{ pdfjsLib, PDFLib, policy }`) and
+  free of Node-only or browser-only globals except where feature-detected (e.g.
+  `crypto.subtle`). It ships to the browser verbatim. `policy` is the parsed
+  `policy/scriptparse-policy.json` (build.mjs inlines it; the Node tools read it).
 - Don't add runtime network access or external assets.
 - If you touch classification or scaling, add/extend a case in `make_fixture.py`
   and confirm `npm test` stays green **and** eyeball the renders.
@@ -270,7 +299,7 @@ shows which version people are using.
 ## Federation (scriptparse)
 
 This bench consumes the shared parser/policy/interchange truth from the
-private `gothamsound/scriptparse` repo (the hub). Standing law lives in the
+private `Gotham-Sound/scriptparse` repo (the hub). Standing law lives in the
 hub's CLAUDE.md (the constitution) and binds this repo's agents too. The
 rules that most often apply here:
 
@@ -301,3 +330,21 @@ rules that most often apply here:
   `core.autocrlf` artifact, not drift.
 - Escalation is the hub's job: if litigation goes novel, the hub labels
   needs-peter. Don't ping Peter directly from here for federation matters.
+- **Standing corpus harness (Phase 1 flipped 2026-09-18, hub #83):**
+  `node tools/conformance_check.mjs --hub ../scriptparse` (test.sh runs it when a
+  hub checkout is present). Two gates: consumability (every corpus file's sha256
+  vs `manifest.json`, zero-dep JSON.parse, policy binding, and the vendored
+  `policy/scriptparse-policy.json` byte-identical to the hub's) and contract (the
+  engine's interpreter deep-equal on normalize, cue_gate, charset, fold, part_of,
+  parts, offers, dual, burn_in; margin_rows has no consumer here and is reported
+  n/a). It prints the manifest sha256 (the ack number, raw and CR-stripped).
+  **Policy bump = copy the hub's `scriptparse/policy.json` over the vendored file,
+  run this, run the gates, post the numbers on the hub issue.** A red contract
+  vector is either our interpreter bug (fix here) or a hub change we must absorb
+  (never a local rule). Vectors never store script text.
+- **Identity-touching releases (RULED, Peter, 2026-09-17; scriptparse #93):**
+  when a hub release is flagged identity-touching, diff the names this bench
+  would seat under the candidate policy before taking it and publish the diff in
+  the ack. This bench keeps no show; per-visitor localStorage color/selection maps
+  are keyed by seated name strings and orphaned keys are inert (an unknown name
+  simply does not render; "forget my saved settings" clears them).
