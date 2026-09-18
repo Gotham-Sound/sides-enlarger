@@ -51,10 +51,10 @@
   /* "Selected characters" mode: pick who to enlarge */
   .railInstruct { font-size:14px; font-weight:600; color:var(--accent); background:var(--accentSoft);
                   border-radius:8px; padding:9px 11px; margin:0 0 8px; }
-  .enlChk { flex:none; width:28px; height:28px; border:2px solid #b7b7b7; border-radius:7px; background:#fff;
-            color:#fff; font-size:17px; font-weight:800; line-height:1; cursor:pointer; padding:0;
-            display:flex; align-items:center; justify-content:center; }
-  .enlChk.on { background:var(--accent); border-color:var(--accent); }
+  .enlChk { flex:none; min-width:96px; height:30px; border:2px solid #b7b7b7; border-radius:8px; background:#fff;
+            color:#8a8a8a; font-size:12px; font-weight:800; letter-spacing:.05em; line-height:1; cursor:pointer;
+            padding:0 10px; display:flex; align-items:center; justify-content:center; white-space:nowrap; }
+  .enlChk.on { background:var(--accent); border-color:var(--accent); color:#fff; }
   .chTop.sel { cursor:pointer; align-items:center; padding:4px; margin:-4px; border-radius:9px; }
   .chTop.sel:hover { background:#f6f7e8; }
   .chRow.enl { background:var(--accentSoft); border-radius:9px; }
@@ -66,8 +66,12 @@
   #download { display:none; width:100%; padding:18px; font-size:21px; font-weight:700; color:#fff;
               background:var(--accent); border:0; border-radius:12px; cursor:pointer; margin:14px 0 6px; }
   #download:hover { filter:brightness(1.08); }
+  #download:disabled { background:#c9c9c0; color:#fff; cursor:not-allowed; filter:none; }
   #status { margin:10px 0; font-size:15px; min-height:22px; }
   #status.err { color:var(--err); font-weight:600; }
+  /* the shout: the one state a tired reader must not glide past (nobody
+     ticked in Selected mode, so nothing grew) */
+  #status.warn { color:var(--warn); font-weight:800; font-size:19px; }
   ul#warnings { margin:6px 0 0; padding-left:20px; color:var(--warn); font-size:14px; }
   ul#warnings li { margin:2px 0; }
   .dropAlt { font-size:13px; color:#999; margin-top:8px; }
@@ -407,7 +411,7 @@ window.__bootSides__ = function (pdfjs) {
     if (sel && model.length) {
       var instr = document.createElement('p');
       instr.className = 'railInstruct';
-      instr.textContent = 'Tap who you’re reading. Their lines get bigger.';
+      instr.textContent = 'Tap READING next to your character. Their lines get bigger. Colors are separate: they highlight.';
       charList.appendChild(instr);
     }
     var groupShown = false;
@@ -437,7 +441,7 @@ window.__bootSides__ = function (pdfjs) {
         chk.className = 'enlChk' + (on ? ' on' : '');
         chk.setAttribute('aria-pressed', on ? 'true' : 'false');
         chk.setAttribute('aria-label', (on ? 'Enlarging ' : 'Enlarge ') + c.name);
-        chk.textContent = on ? '✓' : '';
+        chk.textContent = on ? '✓ READING' : 'READING';
         chk.addEventListener('click', function (e) { e.stopPropagation(); toggleEnlarge(c.name); });
         top.appendChild(chk);
       }
@@ -491,12 +495,32 @@ window.__bootSides__ = function (pdfjs) {
         }
       }
       prefs.charColors[name] = idx;
+      // Selected mode with nobody ticked: a color tap on a name is the tap a
+      // reader means as "that's me"
+      if (prefs.enlargeMode === 'selected' && !tickedNames().length) prefs.enlargeChars[name] = true;
     }
     savePrefs(prefs);
     renderRail();
     scheduleProcess();
   }
 
+  function tickedNames() {
+    return Object.keys(prefs.enlargeChars).filter(function (n) { return prefs.enlargeChars[n] && !isHidden(n); });
+  }
+  // Seed (Selected mode): when nobody is ticked, whoever already has a
+  // highlight color is who you're reading. Runs when Selected mode is entered
+  // and once per loaded file, never on every pass, so a deliberate untick is
+  // respected. (The author highlighted two names, ticked nobody, and got a
+  // PDF with nothing bigger, 2026-09-18; a tired reader on set would too.)
+  function seedSelection() {
+    if (tickedNames().length) return false;
+    var seeded = false;
+    for (var name in prefs.charColors) {
+      if (prefs.charColors[name] != null && !isHidden(name)) { prefs.enlargeChars[name] = true; seeded = true; }
+    }
+    if (seeded) savePrefs(prefs);
+    return seeded;
+  }
   function toggleEnlarge(name) {
     if (prefs.enlargeChars[name]) delete prefs.enlargeChars[name];
     else prefs.enlargeChars[name] = true;
@@ -507,6 +531,7 @@ window.__bootSides__ = function (pdfjs) {
 
   function setMode(m) {
     prefs.enlargeMode = m;
+    if (m === 'selected') seedSelection();
     savePrefs(prefs);
     syncModeSeg();
     renderRail();
@@ -737,9 +762,15 @@ window.__bootSides__ = function (pdfjs) {
     previews.classList.toggle('readerMode', prefs.enlargeMode === 'reader');
   }
 
-  function setStatus(msg, isErr) {
+  function setStatus(msg, kind) {
     status.textContent = msg || '';
-    status.className = isErr ? 'err' : '';
+    status.className = kind === true ? 'err' : (kind || '');
+  }
+  // the download button is only live when the output differs from the input
+  function setDownload(enabled, label) {
+    dlBtn.disabled = !enabled;
+    dlBtn.textContent = label;
+    dlBtn.style.display = 'block';
   }
   function showWarnings(report) {
     warnUl.innerHTML = '';
@@ -781,9 +812,8 @@ window.__bootSides__ = function (pdfjs) {
       if (prefs.enlargeMode === 'page') opts.mode = 'page';
       else if (prefs.enlargeMode === 'reader') opts.mode = 'reader';
       else if (prefs.enlargeMode === 'selected') {
-        opts.enlargeOnly = Object.keys(prefs.enlargeChars).filter(function (n) {
-          return prefs.enlargeChars[n] && !isHidden(n);
-        });
+        if (seededGen !== fileGen) { seededGen = fileGen; if (seedSelection()) renderRail(); }
+        opts.enlargeOnly = tickedNames();
       }
       engine.process(originalBytes, opts).then(function (res) {
         if (genAt !== fileGen) { // result belongs to a replaced file: drop it
@@ -811,6 +841,7 @@ window.__bootSides__ = function (pdfjs) {
         });
       }).then(function (res) {
         if (!res) return;
+        var dlOn = true, dlLabel = 'Download enlarged PDF';
         if (!res.report.pages.length && res.report.readerPages == null) {
           // calibration failed: engine returned the PDF unchanged
           setStatus('Done — could not recognize this PDF as sides; returned unchanged.');
@@ -821,12 +852,20 @@ window.__bootSides__ = function (pdfjs) {
         } else {
           var scaled = res.report.pages.filter(function (p) { return p.appliedScale > 1.001; }).length;
           var what = res.report.mode === 'page' ? 'everything' : 'dialogue';
-          var note = (prefs.enlargeMode === 'selected' && !(opts.enlargeOnly && opts.enlargeOnly.length))
-            ? ' Check the characters you’re reading, in the list, to choose whose dialogue grows.' : '';
-          setStatus('Done — ' + what + ' enlarged on ' + scaled + ' of ' + res.report.pages.length + ' pages.'
-                    + highlightSummary(res.report) + note);
+          var hs = highlightSummary(res.report);
+          if (prefs.enlargeMode === 'selected' && !scaled) {
+            // the shout: nothing grew, say exactly why and what to tap
+            var ticked = opts.enlargeOnly || [];
+            setStatus((ticked.length ? 'None of the ticked names are in this PDF.' : 'Nobody’s ticked yet.')
+                      + ' Tap READING next to who you’re reading.' + hs, 'warn');
+          } else {
+            setStatus('Done — ' + what + ' enlarged on ' + scaled + ' of ' + res.report.pages.length + ' pages.' + hs);
+          }
+          // the button only offers what actually changed
+          if (!scaled && !hs) { dlOn = false; dlLabel = 'Nothing to download yet'; }
+          else if (!scaled) dlLabel = 'Download highlighted PDF';
         }
-        dlBtn.style.display = 'block';
+        setDownload(dlOn, dlLabel);
         showPreviews();
         busy = false;
         if (queued) { queued = false; process(); }
@@ -847,6 +886,7 @@ window.__bootSides__ = function (pdfjs) {
   }
 
   var fileGen = 0; // generation token: guards against file-selection races
+  var seededGen = -1; // the file generation the Selected-mode seed last ran for
   function acceptFile(file) {
     if (!file) return;
     if (!/pdf$/i.test(file.type) && !/\.pdf$/i.test(file.name)) {

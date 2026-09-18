@@ -218,6 +218,14 @@ import is RECONCILIATION, not skipped extraction.
   "in show file" chip), geometric-only names in a secondary group; a banner offers
   a source picker when foreign sluglines appear; "Export .sceneline" is round-trip
   only (needs a loaded base) and defaults to lean.
+- **UI, Selected-characters mode (v1.11.0, 2026-09-18):** the READING tick per
+  name is what the engine gets as `enlargeOnly`; highlight colors are a separate
+  control. Entering the mode or loading a file with nobody ticked seeds the ticks
+  from the colors, and a color tap with nobody ticked ticks that name. Zero
+  enlarged pages in this mode is a SHOUTED status ("Nobody's ticked yet…", or
+  "None of the ticked names are in this PDF…"), and the download button is
+  disabled ("Nothing to download yet") unless highlights make the output differ.
+  The author fell into the silent version of this state; keep it loud.
 - **Tests:** `tools/test_sceneline.mjs` (wired into `test.sh`) generates synthetic
   fixtures at runtime (spec §7: never store a `.sceneline`) and asserts acceptance
   (a)-(e) incl. the deep-equal round-trip. `*.sceneline` is gitignored.
