@@ -238,7 +238,7 @@
          target="_blank" rel="noopener noreferrer">Report an issue or request a feature</a></p>
   </section>
 
-  <footer>Sides Enlarger v1.10.0 &middot; Everything runs in your browser: no uploads, no accounts, no tracking.<br>
+  <footer>Sides Enlarger v1.10.1 &middot; Everything runs in your browser: no uploads, no accounts, no tracking.<br>
     <a href="https://github.com/gothamsound/sides-enlarger/blob/main/README.md#run-it-offline-keep-your-own-copy" target="_blank" rel="noopener noreferrer">How to download this page and run it offline</a><br>
     <a href="https://github.com/gothamsound/sides-enlarger/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">MIT License</a>
     &middot; free software, provided as is with no warranty &middot; &copy; 2026 Gotham Sound and Communications, Inc.</footer>
@@ -1607,7 +1607,17 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.17","_comment":"The cross-la
   // coverage, call sheets) are skipped entirely.
   function buildReaderElements(pages) {
     const els = [];
-    const push = el => { if (el && el.text && el.text.trim()) els.push(el); };
+    // every element carries its source page (0-based index + printed label)
+    // and the scene it sits in (id from the margin scene number, heading
+    // normalized), so a consumer can key a cursor to a page or a scene
+    // without re-deriving either. Additive: the PDF renderer ignores them.
+    let curPage = null, curLabel = null, curScene = { id: null, heading: null };
+    const push = el => {
+      if (!(el && el.text && el.text.trim())) return;
+      el.page = curPage; el.pageLabel = curLabel;
+      el.scene = curScene.id; el.heading = curScene.heading;
+      els.push(el);
+    };
     const textFromItems = items => {
       // content order, not x order: kerned per-glyph text can overlap
       // slightly and x-sorting would scramble the reading order
@@ -1672,7 +1682,8 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.17","_comment":"The cross-la
         const numLoose = num.replace(/[^A-Za-z0-9]/g, '').split('').join('\\s*');
         headerText = headerText.replace(new RegExp('\\s+' + numLoose + '\\s*\\.?\\s*$'), '').trim();
       }
-      els.push({ t: 'break', text: 'SCRIPT PAGE ' + num + (headerText ? ' · ' + headerText : '') });
+      curPage = P.index; curLabel = num;
+      push({ t: 'break', text: 'SCRIPT PAGE ' + num + (headerText ? ' · ' + headerText : ''), header: headerText });
       const ML = 70, marginR = P.width - 80;
       const lineName = new Map();
       for (const B of (P.blocks || [])) {
@@ -1782,7 +1793,8 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.17","_comment":"The cross-la
           // margin scene numbers were already stripped from `text` above;
           // show the number once, labeled and set clear of the heading, so
           // "- DAY     Sc. 24" can't read as the phrase "DAY 24".
-          push({ t: 'slug', text: text + (sceneNum ? '     Sc. ' + sceneNum : '') });
+          curScene = { id: sceneNum || null, heading: normalizeHeading(text) };
+          push({ t: 'slug', text: text + (sceneNum ? '     Sc. ' + sceneNum : ''), heading: curScene.heading });
           continue;
         }
         if (/^(CUT TO|DISSOLVE|FADE|SMASH CUT|MATCH CUT|TIME CUT|END OF)/.test(text) && L.x0 > P.width / 2) {
@@ -2354,6 +2366,19 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.17","_comment":"The cross-la
         const elements = buildReaderElements(pages);
         report.sourcePages = pages.length;
         report.warnings.push('Reader mode reflows the script into new pages: page numbering does NOT match the original sides. Do not use it for on-set page references.');
+        if (opts.emit === 'elements') {
+          // the reader as DATA: the same element stream the PDF renderer
+          // consumes, numbered, with each element's highlight resolved from
+          // the requested map. No PDF is built; renderReaderPdf() turns this
+          // exact array back into the Reader-mode PDF later.
+          elements.forEach((el, i) => {
+            el.i = i;
+            const idx = el.name != null && hl[el.name] != null ? hl[el.name] : null;
+            el.highlight = idx != null ? { palette: idx, key: PALETTE[idx].key, hex: PALETTE[idx].hex, rgb: PALETTE[idx].rgb } : null;
+          });
+          report.elements = elements.length;
+          return { elements, report };
+        }
         const readerBytes = await renderReader(elements, requested, hl, report);
         return { bytes: readerBytes, report };
       }
@@ -2815,8 +2840,28 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.17","_comment":"The cross-la
       return { bytes: outBytes, report };
     }
 
+    // reader(bytes, opts) -> { elements, report }: Reader mode as a function.
+    // The reflowed script as an ordered element stream (break / slug / action
+    // / cue / paren / dialogue / transition), each with speaker name, source
+    // page, scene and resolved highlight, for consumers that draw the reader
+    // themselves (Sides Helper). opts: { highlights, watermarkText }.
+    async function reader(bytes, opts = {}) {
+      return process(bytes, { highlights: opts.highlights, watermarkText: opts.watermarkText, mode: 'reader', emit: 'elements' });
+    }
+    // renderReaderPdf(elements, scale, highlights) -> Uint8Array: the Reader
+    // PDF from an element stream reader() returned (or a subset of it).
+    async function renderReaderPdf(elements, scale, highlights) {
+      const requested = Math.min(1.5, Math.max(1.0, scale || 1.25));
+      const hl = {};
+      for (const k of Object.keys(highlights || {})) {
+        const idx = highlights[k]; const n = normalizeCueName(k);
+        if (n && idx != null && PALETTE[idx]) hl[n] = idx;
+      }
+      return renderReader(elements, requested, hl, { readerBreaks: [] });
+    }
+
     return {
-      process, extract, analyze, PALETTE,
+      process, extract, analyze, reader, renderReaderPdf, PALETTE,
       // .sceneline interchange (spec v2)
       parseSceneline, unionShows, reconcile, buildSidesBlock, buildScenelineExport, normalizeCueName,
       // the shared name gate on a normalized name, and the compiled scriptparse
@@ -2892,7 +2937,7 @@ window.__bootSides__ = function (pdfjs) {
   var exportRow = document.getElementById('exportRow');
   var exportBtn = document.getElementById('exportBtn');
   var exportFullBtn = document.getElementById('exportFullBtn');
-  var APP_VERSION = '1.10.0';
+  var APP_VERSION = '1.10.1';
 
   var prefs = loadPrefs();
   if (prefs.scale >= 1 && prefs.scale <= 1.5) slider.value = prefs.scale;

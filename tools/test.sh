@@ -271,6 +271,15 @@ run_hl () {
   fi
 }
 
+echo "==> reader mode as a function (engine.reader / renderReaderPdf)"
+if node tools/test_reader_elements.mjs out/fixture.pdf 2>/dev/null | grep -q '^READER-ELEMENTS: ok'; then
+  echo "    [reader elements] PASS"
+else
+  echo "    [reader elements] FAIL"
+  node tools/test_reader_elements.mjs out/fixture.pdf 2>&1 | grep -E '  - |Error|FAIL' | head -20 || true
+  fail=1
+fi
+
 echo "==> .sceneline interchange (import/reconcile/export, acceptance a-e)"
 if node tools/test_sceneline.mjs 2>/dev/null | tee /tmp/sceneline.out | grep -q '^SCENELINE: all'; then
   grep '    \[' /tmp/sceneline.out
