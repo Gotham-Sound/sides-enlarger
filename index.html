@@ -257,7 +257,7 @@
          target="_blank" rel="noopener noreferrer">Report an issue or request a feature</a></p>
   </section>
 
-  <footer>Sides Enlarger v1.12.0 &middot; Everything runs in your browser: no uploads, no accounts, no tracking.<br>
+  <footer>Sides Enlarger v1.13.0 &middot; Everything runs in your browser: no uploads, no accounts, no tracking.<br>
     <a href="https://github.com/gothamsound/sides-enlarger/blob/main/README.md#run-it-offline-keep-your-own-copy" target="_blank" rel="noopener noreferrer">How to download this page and run it offline</a><br>
     <a href="https://github.com/gothamsound/sides-enlarger/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">MIT License</a>
     &middot; free software, provided as is with no warranty &middot; &copy; 2026 Gotham Sound and Communications, Inc.</footer>
@@ -367,6 +367,41 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.17","_comment":"The cross-la
       L.text = L.segments.map(s => s.text).join('   ');
     }
     return lines;
+  }
+
+  // Reconstruct the text of rotated runs (per-recipient watermarks) on a
+  // page: cluster items on the same rotated baseline (same angle, same
+  // perpendicular offset), order them along it, and join with a space only
+  // across a word-sized gap (glyph-per-op stamps abut). Reader mode drops the
+  // rotated items from the reading text and carries this text in its footer
+  // instead, so the recipient's stamp survives the reflow.
+  function rotatedStampTexts(rotItems) {
+    const pts = rotItems.map(it => {
+      const c = Math.cos(it.ang), s = Math.sin(it.ang);
+      return { it, ang: it.ang, along: it.x * c + it.y * s, perp: -it.x * s + it.y * c };
+    }).sort((p, q) => (p.ang - q.ang) || (p.perp - q.perp));
+    const texts = [];
+    let cluster = [];
+    const flush = () => {
+      if (!cluster.length) return;
+      cluster.sort((p, q) => p.along - q.along);
+      let text = '', end = null;
+      for (const p of cluster) {
+        const gap = end === null ? 0 : p.along - end;
+        text += (end !== null && gap > Math.max(1.5, 0.25 * (p.it.size || 12)) ? ' ' : '') + p.it.str;
+        end = p.along + (p.it.w || 0);
+      }
+      text = text.replace(/\s+/g, ' ').trim();
+      if (text && !texts.includes(text)) texts.push(text);
+      cluster = [];
+    };
+    for (const p of pts) {
+      const last = cluster[cluster.length - 1];
+      if (last && (Math.abs(p.ang - last.ang) > 0.05 || Math.abs(p.perp - last.perp) > 2.0)) flush();
+      cluster.push(p);
+    }
+    flush();
+    return texts;
   }
 
   const capsy = t => {
@@ -1996,6 +2031,7 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.17","_comment":"The cross-la
               x: it.transform[4], y: it.transform[5],
               w: it.width, size,
               rot: Math.abs(it.transform[1]) > 0.05 * (size || 1), // watermarks
+              ang: Math.atan2(it.transform[1], it.transform[0]),   // baseline angle (0 = upright)
             };
           });
         for (const it of items) totalChars += it.str.length;
@@ -2010,7 +2046,10 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.17","_comment":"The cross-la
         const bodyItems = items.filter(it => !it.rot);
         // items kept raw so process() can re-build lines after grey-region
         // exclusion (rects only known once the content streams are parsed)
-        pages.push({ index: p, width: vp.viewBox[2] - vp.viewBox[0], height: vp.viewBox[3] - vp.viewBox[1], lines: buildLines(bodyItems), items: bodyItems, rotatedItems: items.length - bodyItems.length });
+        pages.push({ index: p, width: vp.viewBox[2] - vp.viewBox[0], height: vp.viewBox[3] - vp.viewBox[1], lines: buildLines(bodyItems), items: bodyItems,
+          rotatedItems: items.length - bodyItems.length,
+          // the stamp's own words, so reader mode can carry them (see rotatedStampTexts)
+          rotatedTexts: rotatedStampTexts(items.filter(it => it.rot)) });
       }
       await doc.destroy();
       return { pages, totalChars };
@@ -2073,10 +2112,25 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.17","_comment":"The cross-la
         readerPage++;
         page = doc.addPage([W, H]);
         y = H - TOP;
-        page.drawText('READER MODE - reflowed text; page numbers do not match the shooting script',
-          { x: MX, y: 30, size: 7.5, font: F, color: gray });
+        const note = 'READER MODE - reflowed text; page numbers do not match the shooting script';
+        page.drawText(note, { x: MX, y: 30, size: 7.5, font: F, color: gray });
         const pn = String(readerPage);
-        page.drawText(pn, { x: W - MX - F.widthOfTextAtSize(pn, 9), y: 30, size: 9, font: F, color: gray });
+        const pnX = W - MX - F.widthOfTextAtSize(pn, 9);
+        page.drawText(pn, { x: pnX, y: 30, size: 9, font: F, color: gray });
+        drawStamp(page, F.widthOfTextAtSize(note, 7.5), pnX);
+      };
+      // The recipient's watermark text, in the footer of every reader page
+      // (report.readerStamps). On the footer line when it fits between the
+      // note and the page number, else on its own line just above. A diagonal
+      // re-draw across the page is the escalation if a studio ever asks for
+      // more; it would replace this one helper.
+      const stampText = sanitize((report.readerStamps || []).join(' · '));
+      const drawStamp = (pg, noteW, pnX) => {
+        if (!stampText) return;
+        const sz = 8, dark = PDFLib.rgb(0.3, 0.3, 0.3);
+        const sw = F.widthOfTextAtSize(stampText, sz);
+        if (MX + noteW + 16 + sw + 12 <= pnX) pg.drawText(stampText, { x: pnX - 12 - sw, y: 30, size: sz, font: F, color: dark });
+        else pg.drawText(stampText, { x: Math.max(MX, (W - sw) / 2), y: 42, size: sz, font: F, color: dark });
       };
       newPage();
       const ensure = h => { if (y - h < BOT) newPage(); };
@@ -2427,6 +2481,14 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.17","_comment":"The cross-la
         const elements = buildReaderElements(pages);
         report.sourcePages = pages.length;
         report.warnings.push('Reader mode reflows the script into new pages: page numbering does NOT match the original sides. Do not use it for on-set page references.');
+        // The recipient's stamp text rides every reader page's footer: rotated
+        // runs (signal 1, reconstructed per page) and repeated-position groups
+        // (signal 2, the burn-in rail). Distinct, in first-seen order.
+        const stamps = [];
+        for (const P of pages) for (const t of (P.rotatedTexts || [])) if (!stamps.includes(t)) stamps.push(t);
+        for (const b of burn.rail) if (!stamps.includes(b.text)) stamps.push(b.text);
+        report.readerStamps = stamps;
+        if (stamps.length) report.warnings.push('Recipient watermark text carried into the footer of every reader page: ' + stamps.map(t => '“' + t + '”').join(', ') + '.');
         if (opts.emit === 'elements') {
           // the reader as DATA: the same element stream the PDF renderer
           // consumes, numbered, with each element's highlight resolved from
@@ -2911,14 +2973,16 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.17","_comment":"The cross-la
     }
     // renderReaderPdf(elements, scale, highlights) -> Uint8Array: the Reader
     // PDF from an element stream reader() returned (or a subset of it).
-    async function renderReaderPdf(elements, scale, highlights) {
+    async function renderReaderPdf(elements, scale, highlights, stamps) {
       const requested = Math.min(1.5, Math.max(1.0, scale || 1.25));
       const hl = {};
       for (const k of Object.keys(highlights || {})) {
         const idx = highlights[k]; const n = normalizeCueName(k);
         if (n && idx != null && PALETTE[idx]) hl[n] = idx;
       }
-      return renderReader(elements, requested, hl, { readerBreaks: [] });
+      // stamps: the recipient watermark text(s) to carry in every footer
+      // (report.readerStamps from the analysis that produced the elements)
+      return renderReader(elements, requested, hl, { readerBreaks: [], readerStamps: [].concat(stamps || []) });
     }
 
     return {
@@ -3000,7 +3064,7 @@ window.__bootSides__ = function (pdfjs) {
   var exportRow = document.getElementById('exportRow');
   var exportBtn = document.getElementById('exportBtn');
   var exportFullBtn = document.getElementById('exportFullBtn');
-  var APP_VERSION = '1.12.0';
+  var APP_VERSION = '1.13.0';
 
   var prefs = loadPrefs();
   if (prefs.scale >= 1 && prefs.scale <= 1.5) slider.value = prefs.scale;

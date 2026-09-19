@@ -159,6 +159,24 @@ assert "WM" not in wm, "watermark text leaked into the cast: %r" % wm
 assert any("watermark" in w.lower() for w in warns), "no never-silent watermark warning emitted"
 PY
 check_one out/fixture_wm.pdf out/fixture_wm.out.pdf "watermark: geometry parity" "$RENDER_DIR/fixture_wm"
+# reader mode drops the rotated stamp from the reading text and carries its
+# words in every reader page's footer instead (the recipient's watermark
+# survives the reflow); the report lists what it carried
+node tools/run_engine_node.mjs out/fixture_wm.pdf out/fixture_wm.reader.pdf 1.25 'LAURA=0' --mode=reader \
+  >/dev/null 2>out/fixture_wm.reader.err || { echo "    [watermark reader] ENGINE ERROR:"; cat out/fixture_wm.reader.err; fail=1; }
+check_one out/fixture_wm.pdf out/fixture_wm.reader.pdf "watermark: reader parity + footer stamp" "$RENDER_DIR/fixture_wm_reader"
+python3 - <<'PY' && echo "    [watermark: stamp in every reader footer, never in the text] PASS" || { echo "    [watermark: reader stamp] FAIL"; fail=1; }
+import fitz, json
+rep = json.load(open("out/fixture_wm.reader.pdf.report.json"))
+assert rep.get("readerStamps") == ["WM"], "readerStamps should be ['WM'], got %r" % rep.get("readerStamps")
+assert any("watermark text carried" in w.lower() for w in rep.get("warnings", [])), "stamp carry not announced"
+doc = fitz.open("out/fixture_wm.reader.pdf")
+for i in range(doc.page_count):
+    H = doc[i].rect.height
+    words = doc[i].get_text("words")
+    assert any(w[4] == "WM" and w[3] >= H - 45 for w in words), "page %d footer lacks the stamp" % (i + 1)
+    assert not any(w[4] == "WM" and w[3] < H - 45 for w in words), "page %d: stamp leaked into the reading text" % (i + 1)
+PY
 
 # declared watermark text (opts.watermarkText): the page-10 stamp "COPY OF
 # JANE DOE" is horizontal, so only the user's declaration can exclude it.
@@ -208,11 +226,17 @@ check_one out/fixture_burnin.pdf out/fixture_burnin.out.pdf "burn-in: geometry p
 node tools/run_engine_node.mjs out/fixture_burnin.pdf out/fixture_burnin.reader.pdf 1.25 'LAURA=0' --mode=reader \
   >/dev/null 2>out/fixture_burnin.reader.err || { echo "    [burn-in reader] ENGINE ERROR:"; cat out/fixture_burnin.reader.err; fail=1; }
 check_one out/fixture_burnin.pdf out/fixture_burnin.reader.pdf "burn-in: reader parity" "$RENDER_DIR/fixture_burnin_reader"
-python3 - <<'PY' && echo "    [burn-in: reader does not read the stamp] PASS" || { echo "    [burn-in: reader stamp] FAIL"; fail=1; }
-import fitz
+python3 - <<'PY' && echo "    [burn-in: stamp in every reader footer, never in the text] PASS" || { echo "    [burn-in: reader stamp] FAIL"; fail=1; }
+import fitz, json
+rep = json.load(open("out/fixture_burnin.reader.pdf.report.json"))
+assert "Prepared for J. Doe" in rep.get("readerStamps", []), "readerStamps lacks the signal-2 stamp: %r" % rep.get("readerStamps")
 doc = fitz.open("out/fixture_burnin.reader.pdf")
-txt = "\n".join(doc[i].get_text() for i in range(doc.page_count))
-assert "Prepared for J. Doe" not in txt, "stamp text leaked into the reader output"
+for i in range(doc.page_count):
+    H = doc[i].rect.height
+    body = " ".join(w[4] for w in doc[i].get_text("words") if w[3] < H - 45)
+    foot = " ".join(w[4] for w in doc[i].get_text("words") if w[3] >= H - 45)
+    assert "Prepared for J. Doe" not in body, "page %d: stamp leaked into the reading text" % (i + 1)
+    assert "Prepared for J. Doe" in foot, "page %d footer lacks the stamp" % (i + 1)
 PY
 
 # multi-episode day-side: the running header varies per page (only the show

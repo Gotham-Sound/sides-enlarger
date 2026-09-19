@@ -576,6 +576,17 @@ def reader_check(b, a, report, fails, notes):
                 for sp in ln["spans"]:
                     if sp["bbox"][3] < H - 45 and sp["text"].strip() and sp["size"] > 9:
                         sizes.append(sp["size"])
+    # the recipient's watermark text must ride EVERY reader page's footer
+    # zone (report.readerStamps; the footer zone is the bottom 45pt, which the
+    # body accounting above excludes), and nowhere in the reading text
+    stamps = [str(s) for s in (report or {}).get("readerStamps", []) if str(s).strip()]
+    for pi in range(len(a)):
+        H = a[pi].rect.height
+        foot = " ".join(w[4] for w in sorted(a[pi].get_text("words"), key=lambda w: (round(w[1]), w[0])) if w[3] >= H - 45)
+        foot = re.sub(r"\s+", " ", foot)
+        for st in stamps:
+            if re.sub(r"\s+", " ", st) not in foot:
+                fails.append(f"reader: p{pi+1} footer lacks the watermark stamp {st[:30]!r}")
     # subtract the known page-break marker text before the invented check
     # (labels are the full drawn strings, e.g. 'SCRIPT PAGE 17 · NCIS: ...')
     for label in (report or {}).get("readerBreaks", []):
