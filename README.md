@@ -22,15 +22,10 @@ production scripts never leave the device.
    phone, tablet, or computer).
 2. Drag your sides PDF onto the page (or tap to choose the file).
    **Got a Netflix sides link instead of a file?** Paste it into the "Netflix
-   sides link" field under the drop zone. Netflix's viewer shows the pages as
-   pictures, which this tool cannot read, but the same link points at the
-   real PDF once its address is changed: the tool rewrites
-   `linkshare.netflixstudios.com/pdfView?file=…` to
-   `linkshare.netflixstudios.com/file?fileId=…` and offers it as a link that
-   opens the PDF in a new tab. Save it there (on an iPad: Share, then Save to
-   Files) and drop it here. You can do the rewrite by hand in Safari's address
-   bar the same way: change `pdfView?file=` to `file?fileId=`, then Share.
-   The page never fetches anything itself.
+   sides link" field under the drop zone and tap the button: your sides open
+   as a PDF in a new tab. Save it there (on an iPad: Share, then Save to
+   Files) and drop it here. The page never fetches anything itself, and the
+   link is not kept anywhere.
 3. It shows the original and the enlarged version side by side. Flip through the
    pages to check.
 4. Tap **Download enlarged PDF**. Print it or read it on your device.
