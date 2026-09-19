@@ -294,6 +294,14 @@ else
   fail=1
 fi
 
+echo "==> studio sides-link rewrite (pure, no network)"
+if node tools/test_links.mjs 2>/dev/null | tee /tmp/links.out | grep -q '^LINKS: all'; then
+  grep '    \[' /tmp/links.out
+else
+  grep '    \[' /tmp/links.out || true
+  echo "    [links] FAIL"; fail=1
+fi
+
 echo "==> .sceneline interchange (import/reconcile/export, acceptance a-e)"
 if node tools/test_sceneline.mjs 2>/dev/null | tee /tmp/sceneline.out | grep -q '^SCENELINE: all'; then
   grep '    \[' /tmp/sceneline.out

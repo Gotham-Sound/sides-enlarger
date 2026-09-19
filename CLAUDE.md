@@ -46,6 +46,7 @@ tools/make_fixture.py   Generates a synthetic screenplay PDF (reportlab) for tes
 tools/run_engine_node.mjs  Runs engine.js headless on a PDF (uses node_modules build).
 tools/check.py          Independent verifier (pymupdf) + side-by-side page renders.
 tools/test_sceneline.mjs  Headless acceptance tests for the .sceneline interchange.
+tools/test_links.mjs    Unit test for the studio sides-link rewrite (made-up tokens only).
 tools/conformance_check.mjs  Inverted-verification runner for the hub's conformance corpus (scriptparse #40).
 tools/test.sh           One-shot: fixture (and optional real PDFs) at 1.0/1.25/1.5.
 docs/sceneline-interchange-v2.md  The .sceneline interchange spec (committed, no script text).
@@ -281,7 +282,11 @@ import is RECONCILIATION, not skipped extraction.
   free of Node-only or browser-only globals except where feature-detected (e.g.
   `crypto.subtle`). It ships to the browser verbatim. `policy` is the parsed
   `policy/scriptparse-policy.json` (build.mjs inlines it; the Node tools read it).
-- Don't add runtime network access or external assets.
+- Don't add runtime network access or external assets. The Netflix sides-link
+  feature (`rewriteSidesLink`, v1.12.0) is a pure string rewrite offered as a
+  plain `target=_blank rel=noopener noreferrer` link the user opens; the page
+  never fetches it (CSP `connect-src 'none'` stands), never stores the token,
+  and only recognises that one host. Do not add a fetch path for it.
 - If you touch classification or scaling, add/extend a case in `make_fixture.py`
   and confirm `npm test` stays green **and** eyeball the renders.
 

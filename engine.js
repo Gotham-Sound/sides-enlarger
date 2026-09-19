@@ -442,6 +442,31 @@
     return [...map.values()].sort((a, b) => b.lines - a.lines || (a.name < b.name ? -1 : 1));
   }
 
+  // ---------- studio link rewrite (Netflix sides links) ----------
+  // Netflix distributes a day's sides as a per-recipient link that opens a
+  // canvas viewer (no text layer, no download). The viewer itself fetches the
+  // PDF from the same host with the same token, and that URL served straight
+  // to a browser IS the PDF. This rewrites the viewer link to the file link:
+  //   https://linkshare.netflixstudios.com/pdfView?file=<token>
+  //   -> https://linkshare.netflixstudios.com/file?fileId=<token>
+  // Pure string work, this host only, the token untouched and never stored.
+  // The page then offers the result as a link the user opens in a new tab;
+  // nothing is fetched by this page (CSP connect-src 'none' stands).
+  const SIDES_LINK_HOST = 'linkshare.netflixstudios.com';
+  const SIDES_LINK_TOKEN = /^[A-Za-z0-9._~%-]+$/;
+  function rewriteSidesLink(text) {
+    let u;
+    try { u = new URL(String(text || '').trim()); } catch (e) { return null; }
+    if (u.hostname.toLowerCase() !== SIDES_LINK_HOST) return null;
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+    let token = null;
+    if (u.pathname === '/pdfView') token = u.searchParams.get('file');
+    else if (u.pathname === '/file') token = u.searchParams.get('fileId');
+    else return null;
+    if (!token || !SIDES_LINK_TOKEN.test(token)) return null;
+    return 'https://' + SIDES_LINK_HOST + '/file?fileId=' + token;
+  }
+
   // ---------- .sceneline interchange (spec v2) ----------
   // Pure data helpers: parse/union/reconcile/export the `.sceneline` JSON that
   // other Gotham benches (Sceneline, TechSpotter, Tablecut) write. The file is
@@ -2617,6 +2642,8 @@
       // policy interpreter itself (tools/conformance_check.mjs runs the hub's
       // corpus against it; the UI reads .version)
       cueGateOk, policy: POL,
+      // studio link rewrite (pure; tools/test_links.mjs)
+      rewriteSidesLink,
     };
   };
 });
