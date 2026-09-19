@@ -173,6 +173,15 @@ renderer re-segmenting enlarged lines). It also writes
   strips UNDER the text (we own the background). The verifier's contract for
   reader mode is different: no body word lost, nothing invented beyond the
   reported `readerBreaks` markers and footers, stars dropped, size correct.
+  **The recipient's stamp rides the footer (v1.13.0):** the text of rotated
+  runs (signal 1, reconstructed per rotated baseline by `rotatedStampTexts` in
+  `extract()`) and of signal-2 groups is listed in `report.readerStamps`,
+  announced in a warning, and drawn in every reader page's footer (`drawStamp`
+  in `renderReader`; the elements API takes it as a 4th argument). The verifier
+  requires each stamp in every reader page's footer zone and never in the
+  reading text. Footer, not a diagonal re-draw, by Peter's call: it respects
+  reader mode's clean page, and the diagonal is the escalation if a studio
+  asks for more; it would replace that one helper.
 - **Highlighting**: one rounded rect per block of an assigned character,
   painted as a Multiply-blend fill in a content stream APPENDED after the page
   content (so white background fills inside forms can't hide it; glyphs stay

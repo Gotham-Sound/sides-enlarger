@@ -55,7 +55,9 @@ same-page-count rule:
   e-reader): bold scene headings, centered character names, full-width
   dialogue and action with the line wraps removed, at the size you pick with
   the slider. Headers, footers, page numbers, revision stars and watermarks
-  are dropped. Where each original script page begins, a gray "SCRIPT PAGE
+  are dropped from the reading text, and the recipient's watermark name is
+  printed in the footer of every reader page. Where each original script page
+  begins, a gray "SCRIPT PAGE
   34" rule is drawn inline, so when someone on set calls a page you can still
   find it. Every reader page carries a footer reminding you the new page
   numbers do not match the shooting script. Highlights work here too.
