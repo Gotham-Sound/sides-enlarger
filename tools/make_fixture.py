@@ -227,6 +227,14 @@ PAGES = [
         ("dual_cues", "RPT RPT TO", "# STAND INS"),
         ("blank",),
         ("action", "NO CREW PARKING ON SET--"),
+        ("blank",),
+        # the small-type trap (real call sheet, 2026-09-18): a 7pt caps row at
+        # the cue x with a 7pt note beneath it at the dialogue x reads as a
+        # cue block by position alone. The type-size gate must refuse it, or
+        # the sheet gains "dialogue": two lines grow, the rows become 1-line
+        # "characters", and reader mode reflows the whole sheet.
+        ("smallcue", "NO SMOKING ON SET"),
+        ("smalldial", "*** Vans depart base camp at 6am sharp ***"),
     ],
     # page 10 — a GREY-SHADED (omitted / not-shooting) block: real sides grey
     # out the scenes not being shot. Text under the grey band is context, not
@@ -420,6 +428,13 @@ def _draw_page(c, pi, page, watermark=False, burnin=False):
             c.drawString(X_ACTION + drift, y, tok[1])
             c.restoreState()
             y -= LEAD
+            continue
+        if kind in ("smallcue", "smalldial"):
+            # call-sheet type: 7pt at the script's cue / dialogue x, tight pitch
+            c.setFont(FONT, 7)
+            c.drawString((X_CUE if kind == "smallcue" else X_DIAL) + drift, y, tok[1])
+            c.setFont(FONT, SIZE)
+            y -= 9
             continue
         if kind == "stamp":
             # horizontal light-grey stamp text (not a filled rect, not rotated)

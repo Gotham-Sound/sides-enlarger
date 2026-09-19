@@ -88,6 +88,8 @@ def get_lines(page, burn=None):
             lines.append({"y": sp["y"], "spans": [sp]})
     for L in lines:
         L["spans"].sort(key=lambda s: s["x0"])
+        # the line's type size (median of its spans), for the type-size gate
+        L["size"] = statistics.median(s["size"] for s in L["spans"])
         L["x0"] = L["spans"][0]["x0"]
         L["x1"] = max(s["x1"] for s in L["spans"])
         # segments split at >40pt gaps (dual dialogue)
@@ -387,12 +389,22 @@ def classify_doc(doc):
     cue_xs = [L["x0"] for lines, W in zip(pages_lines, widths) for L in lines if is_cue(L, 200, 340, W)]
     assert len(cue_xs) >= 2, "verifier could not find character cues"
     cue_x = statistics.median(cue_xs)
+    # mirror the engine's type-size gate: the script's type size is the
+    # median over its cue lines; a cue or dialogue candidate more than a
+    # quarter off it (a call sheet's small-type rows at the script's x bands)
+    # is never script
+    cue_sizes = [L["size"] for lines, W in zip(pages_lines, widths) for L in lines
+                 if is_cue(L, cue_x - 12, cue_x + 12, W)]
+    cue_size = statistics.median(cue_sizes) if cue_sizes else 0
+
+    def type_ok(L):
+        return not cue_size or abs(L["size"] - cue_size) <= 0.25 * cue_size
     dial_xs = []
     for lines, W in zip(pages_lines, widths):
         for i, L in enumerate(lines):
-            if is_cue(L, cue_x - 12, cue_x + 12, W) and i + 1 < len(lines):
+            if type_ok(L) and is_cue(L, cue_x - 12, cue_x + 12, W) and i + 1 < len(lines):
                 nxt = lines[i + 1]
-                if (nxt["y"] - L["y"] < 3 * LEAD and cue_x - 130 < nxt["x0"] < cue_x - 30
+                if (type_ok(nxt) and nxt["y"] - L["y"] < 3 * LEAD and cue_x - 130 < nxt["x0"] < cue_x - 30
                         and not nxt["text"].strip().startswith("(")):
                     dial_xs.append(nxt["x0"])
     dial_x = statistics.median(dial_xs)
@@ -418,10 +430,10 @@ def classify_doc(doc):
                     L["cls"] = "dual"
                     continue
                 dual = False
-            if is_cue(L, cue_x - 12, cue_x + 12, W):
+            if type_ok(L) and is_cue(L, cue_x - 12, cue_x + 12, W):
                 L["cls"], in_block = "cue", True
                 continue
-            if in_block and (abs(L["x0"] - dial_x) <= 9 or abs(L["x0"] - paren_x) <= 9):
+            if in_block and type_ok(L) and (abs(L["x0"] - dial_x) <= 9 or abs(L["x0"] - paren_x) <= 9):
                 L["cls"] = "more" if re.match(r"^\(\s*MORE\s*\)\s*$", L["text"].strip(), re.I) else "dialogue"
                 continue
             L["cls"], in_block = "other", False

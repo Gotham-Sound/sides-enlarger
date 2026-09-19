@@ -46,6 +46,7 @@ tools/make_fixture.py   Generates a synthetic screenplay PDF (reportlab) for tes
 tools/run_engine_node.mjs  Runs engine.js headless on a PDF (uses node_modules build).
 tools/check.py          Independent verifier (pymupdf) + side-by-side page renders.
 tools/test_sceneline.mjs  Headless acceptance tests for the .sceneline interchange.
+tools/test_links.mjs    Unit test for the studio sides-link rewrite (made-up tokens only).
 tools/conformance_check.mjs  Inverted-verification runner for the hub's conformance corpus (scriptparse #40).
 tools/test.sh           One-shot: fixture (and optional real PDFs) at 1.0/1.25/1.5.
 docs/sceneline-interchange-v2.md  The .sceneline interchange spec (committed, no script text).
@@ -90,6 +91,15 @@ renderer re-segmenting enlarged lines). It also writes
   photocopies — margins drift, so never hardcode absolute x positions. Use
   **medians**, never modes: per-page drift clusters samples per page, and a mode
   locks onto one page's drift instead of the document center.
+- **Type-size gate (v1.11.1):** calibration also learns the script's type size
+  (`cal.cueSize`, the median size of the cue lines), and a cue or dialogue
+  candidate more than a quarter off it is never script. Call sheets, coverage
+  grids and revision tables are small type (4-7pt against 12pt body) and their
+  rows can land exactly on the cue x with a note beneath at the dialogue x; by
+  position alone that is a cue block, so without the gate the sheet gains two
+  "dialogue" lines, two 1-line "characters", and reader mode reflows the whole
+  sheet (real packet, 2026-09-18). Relative to the document, never an absolute
+  size: photocopied sides get re-scaled. Mirrored in check.py.
 - **Classify** each visual line: cue / dialogue / parenthetical / dual / other.
   Classification also collects cue-led **blocks** (cue + parentheticals +
   dialogue) used for character extraction and highlighting.
@@ -258,6 +268,11 @@ import is RECONCILIATION, not skipped extraction.
 - **Dual dialogue** and **revision-history / call-sheet tables** are left untouched
   (a table row may or may not read as a dual header; either way the page must stay
   identical, and no-dialogue pages contribute no names).
+- **A call sheet is not a no-dialogue page by luck.** Its small-type rows can
+  sit on the script's cue and dialogue x bands; the type-size gate is what keeps
+  them out of classification. The fixture's call-sheet page carries that trap
+  (`smallcue` / `smalldial` tokens) and test.sh asserts the page stays
+  no-dialogue in enlarge mode and absent from reader mode.
 
 ## Rules for changes
 - Never commit real scripts or their renders. `.gitignore` blocks `sides/`,
@@ -267,7 +282,11 @@ import is RECONCILIATION, not skipped extraction.
   free of Node-only or browser-only globals except where feature-detected (e.g.
   `crypto.subtle`). It ships to the browser verbatim. `policy` is the parsed
   `policy/scriptparse-policy.json` (build.mjs inlines it; the Node tools read it).
-- Don't add runtime network access or external assets.
+- Don't add runtime network access or external assets. The Netflix sides-link
+  feature (`rewriteSidesLink`, v1.12.0) is a pure string rewrite offered as a
+  plain `target=_blank rel=noopener noreferrer` link the user opens; the page
+  never fetches it (CSP `connect-src 'none'` stands), never stores the token,
+  and only recognises that one host. Do not add a fetch path for it.
 - If you touch classification or scaling, add/extend a case in `make_fixture.py`
   and confirm `npm test` stays green **and** eyeball the renders.
 

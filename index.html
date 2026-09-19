@@ -67,6 +67,15 @@
               background:var(--accent); border:0; border-radius:12px; cursor:pointer; margin:14px 0 6px; }
   #download:hover { filter:brightness(1.08); }
   #download:disabled { background:#c9c9c0; color:#fff; cursor:not-allowed; filter:none; }
+  .linkRow { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; margin:10px 0 0; font-size:15px; }
+  .linkRow label { font-weight:600; }
+  .linkRow input { flex:1 1 280px; min-width:0; padding:9px 11px; font-size:15px; border:1.5px solid #c9c9c0; border-radius:8px; background:#fff; }
+  .linkOpen { display:inline-block; padding:10px 16px; font-size:16px; font-weight:700; color:#fff; background:var(--accent);
+              border-radius:10px; text-decoration:none; white-space:nowrap; }
+  .linkOpen:hover { filter:brightness(1.08); }
+  .linkOpen[hidden] { display:none; } /* the class rule would otherwise outrank the UA's [hidden] */
+  .linkNote { flex-basis:100%; font-size:14px; color:#555; }
+  .linkNote.warn { color:var(--warn); font-weight:600; }
   #status { margin:10px 0; font-size:15px; min-height:22px; }
   #status.err { color:var(--err); font-weight:600; }
   /* the shout: the one state a tired reader must not glide past (nobody
@@ -177,6 +186,12 @@
        load the character list from your breakdown instead of re-reading the PDF.</p>
     <input type="file" id="file" accept="application/pdf,.pdf,.sceneline,application/json" multiple hidden>
   </div>
+  <div id="linkRow" class="linkRow">
+    <label for="sidesLink">Got a Netflix sides link?</label>
+    <input type="url" id="sidesLink" placeholder="Paste the linkshare.netflixstudios.com link here" autocomplete="off" autocapitalize="off" spellcheck="false" inputmode="url">
+    <a id="sidesLinkOpen" class="linkOpen" target="_blank" rel="noopener noreferrer" hidden>Open the PDF in a new tab</a>
+    <span id="sidesLinkNote" class="linkNote"></span>
+  </div>
 
   <div class="controls">
     <label for="scale">Size</label>
@@ -242,7 +257,7 @@
          target="_blank" rel="noopener noreferrer">Report an issue or request a feature</a></p>
   </section>
 
-  <footer>Sides Enlarger v1.11.0 &middot; Everything runs in your browser: no uploads, no accounts, no tracking.<br>
+  <footer>Sides Enlarger v1.12.0 &middot; Everything runs in your browser: no uploads, no accounts, no tracking.<br>
     <a href="https://github.com/gothamsound/sides-enlarger/blob/main/README.md#run-it-offline-keep-your-own-copy" target="_blank" rel="noopener noreferrer">How to download this page and run it offline</a><br>
     <a href="https://github.com/gothamsound/sides-enlarger/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">MIT License</a>
     &middot; free software, provided as is with no warranty &middot; &copy; 2026 Gotham Sound and Communications, Inc.</footer>
@@ -373,12 +388,26 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.17","_comment":"The cross-la
       !/(CUT TO|FADE (IN|OUT)|DISSOLVE)/.test(text);
   };
 
+  // A line's type size: the median of its items' sizes (glyph-per-op PDFs
+  // carry one size per glyph). Script body text is one size throughout a
+  // document; call sheets, coverage grids and revision tables are small type.
+  const lineSize = L => median(L.items.map(it => it.size || 0));
+
   function calibrate(pages) {
     const CUE_BAND = [200, 340]; // 2.8"–4.7" initial guess, then refined
     const cueXs = [];
     for (const P of pages) for (const L of P.lines) if (isCueLine(L, CUE_BAND, P.width)) cueXs.push(L.x0);
     if (cueXs.length < 2) return null;
     const cueX = median(cueXs);
+    // the script's type size, from the cue lines (median, like the x bands).
+    // A candidate more than a quarter off it is not script: a call sheet's
+    // caps row at the cue x with a note beneath it at the dialogue x reads
+    // exactly like a cue block by position, but at 5-7pt against 12pt body
+    // text. Never an absolute size: sides get photocopied and re-scaled.
+    const cueSizes = [];
+    for (const P of pages) for (const L of P.lines) if (isCueLine(L, [cueX - 12, cueX + 12], P.width)) cueSizes.push(lineSize(L));
+    const cueSize = cueSizes.length ? median(cueSizes) : 0;
+    const typeOk = L => !cueSize || Math.abs(lineSize(L) - cueSize) <= 0.25 * cueSize;
     // dialogue x0: lines directly below a cue, indented left of it.
     // Skip parentheticals (they sit in their own column) and take the median,
     // not the mode: per-page photocopy drift clusters samples per page, and a
@@ -386,9 +415,9 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.17","_comment":"The cross-la
     const dialXs = [];
     for (const P of pages) {
       for (let i = 0; i < P.lines.length; i++) {
-        if (!isCueLine(P.lines[i], [cueX - 12, cueX + 12], P.width)) continue;
+        if (!typeOk(P.lines[i]) || !isCueLine(P.lines[i], [cueX - 12, cueX + 12], P.width)) continue;
         const nxt = P.lines[i + 1];
-        if (nxt && P.lines[i].y - nxt.y < 3 * LEAD && !/^\(/.test(nxt.text.trim()) &&
+        if (nxt && typeOk(nxt) && P.lines[i].y - nxt.y < 3 * LEAD && !/^\(/.test(nxt.text.trim()) &&
             nxt.x0 > cueX - 130 && nxt.x0 < cueX - 30) dialXs.push(nxt.x0);
       }
     }
@@ -397,7 +426,7 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.17","_comment":"The cross-la
     for (const P of pages) for (const L of P.lines)
       if (/^\(/.test(L.text.trim()) && L.x0 > dialX + 6 && L.x0 < dialX + 70) parenXs.push(L.x0);
     const parenX = parenXs.length ? median(parenXs) : dialX + 43;
-    return { cueX, dialX, parenX };
+    return { cueX, dialX, parenX, cueSize };
   }
 
   // ---------- scriptparse policy interpreter (identity as policy-as-data) ----------
@@ -700,6 +729,31 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.17","_comment":"The cross-la
     return [...map.values()].sort((a, b) => b.lines - a.lines || (a.name < b.name ? -1 : 1));
   }
 
+  // ---------- studio link rewrite (Netflix sides links) ----------
+  // Netflix distributes a day's sides as a per-recipient link that opens a
+  // canvas viewer (no text layer, no download). The viewer itself fetches the
+  // PDF from the same host with the same token, and that URL served straight
+  // to a browser IS the PDF. This rewrites the viewer link to the file link:
+  //   https://linkshare.netflixstudios.com/pdfView?file=<token>
+  //   -> https://linkshare.netflixstudios.com/file?fileId=<token>
+  // Pure string work, this host only, the token untouched and never stored.
+  // The page then offers the result as a link the user opens in a new tab;
+  // nothing is fetched by this page (CSP connect-src 'none' stands).
+  const SIDES_LINK_HOST = 'linkshare.netflixstudios.com';
+  const SIDES_LINK_TOKEN = /^[A-Za-z0-9._~%-]+$/;
+  function rewriteSidesLink(text) {
+    let u;
+    try { u = new URL(String(text || '').trim()); } catch (e) { return null; }
+    if (u.hostname.toLowerCase() !== SIDES_LINK_HOST) return null;
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+    let token = null;
+    if (u.pathname === '/pdfView') token = u.searchParams.get('file');
+    else if (u.pathname === '/file') token = u.searchParams.get('fileId');
+    else return null;
+    if (!token || !SIDES_LINK_TOKEN.test(token)) return null;
+    return 'https://' + SIDES_LINK_HOST + '/file?fileId=' + token;
+  }
+
   // ---------- .sceneline interchange (spec v2) ----------
   // Pure data helpers: parse/union/reconcile/export the `.sceneline` JSON that
   // other Gotham benches (Sceneline, TechSpotter, Tablecut) write. The file is
@@ -961,14 +1015,17 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.17","_comment":"The cross-la
         }
         dualMode = false; dualCur = null;
       }
-      if (isCueLine(L, [cal.cueX - 12, cal.cueX + 12], P.width)) {
+      // type-size gate (see calibrate): script type only, for cues and for
+      // the dialogue beneath them
+      const typeOk = !cal.cueSize || Math.abs(lineSize(L) - cal.cueSize) <= 0.25 * cal.cueSize;
+      if (typeOk && isCueLine(L, [cal.cueX - 12, cal.cueX + 12], P.width)) {
         L.cls = 'cue'; inBlock = true;
         setDialExtent(L, P.width); // cue extents/star cap for scaling
         cur = { name: normalizeCueName(L.text), cue: L, lines: [] };
         P.blocks.push(cur);
         continue;
       }
-      if (inBlock && (near(L.x0, cal.dialX, 9) || near(L.x0, cal.parenX, 9))) {
+      if (inBlock && typeOk && (near(L.x0, cal.dialX, 9) || near(L.x0, cal.parenX, 9))) {
         L.cls = /^\(\s*MORE\s*\)\s*$/i.test(L.text.trim()) ? 'more' : 'dialogue';
         setDialExtent(L, P.width);
         if (cur) cur.lines.push(L);
@@ -2872,6 +2929,8 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.17","_comment":"The cross-la
       // policy interpreter itself (tools/conformance_check.mjs runs the hub's
       // corpus against it; the UI reads .version)
       cueGateOk, policy: POL,
+      // studio link rewrite (pure; tools/test_links.mjs)
+      rewriteSidesLink,
     };
   };
 });
@@ -2941,7 +3000,7 @@ window.__bootSides__ = function (pdfjs) {
   var exportRow = document.getElementById('exportRow');
   var exportBtn = document.getElementById('exportBtn');
   var exportFullBtn = document.getElementById('exportFullBtn');
-  var APP_VERSION = '1.11.0';
+  var APP_VERSION = '1.12.0';
 
   var prefs = loadPrefs();
   if (prefs.scale >= 1 && prefs.scale <= 1.5) slider.value = prefs.scale;
@@ -3546,7 +3605,39 @@ window.__bootSides__ = function (pdfjs) {
     drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.remove('hover'); });
   });
   drop.addEventListener('drop', function (e) {
-    routeFiles(e.dataTransfer && e.dataTransfer.files);
+    var dt = e.dataTransfer;
+    if (dt && dt.files && dt.files.length) { routeFiles(dt.files); return; }
+    // a dragged link (from an address bar or a message) instead of a file
+    var text = dt ? (dt.getData('text/uri-list') || dt.getData('text/plain')) : '';
+    if (text && text.trim()) { sidesLinkInput.value = text.trim(); offerSidesLink(); if (!sidesLinkOpen.hidden) sidesLinkOpen.focus(); }
+  });
+
+  // ---- studio sides link: rewrite the viewer link to the file link (engine,
+  // pure), offer it as a plain link the user opens in a new tab. Nothing is
+  // fetched by this page and the link is never stored anywhere.
+  var sidesLinkInput = document.getElementById('sidesLink');
+  var sidesLinkOpen = document.getElementById('sidesLinkOpen');
+  var sidesLinkNote = document.getElementById('sidesLinkNote');
+  function offerSidesLink() {
+    var raw = sidesLinkInput.value;
+    var out = engine.rewriteSidesLink(raw);
+    if (out) {
+      sidesLinkOpen.href = out;
+      sidesLinkOpen.hidden = false;
+      sidesLinkNote.className = 'linkNote';
+      sidesLinkNote.textContent = 'The PDF opens in a new tab. Save it there (on an iPad: Share, then Save to Files), then drop it here.';
+    } else {
+      sidesLinkOpen.hidden = true;
+      sidesLinkOpen.removeAttribute('href');
+      sidesLinkNote.className = raw.trim() ? 'linkNote warn' : 'linkNote';
+      sidesLinkNote.textContent = raw.trim() ? 'That is not a Netflix sides link. It starts with linkshare.netflixstudios.com/pdfView?file=' : '';
+    }
+  }
+  sidesLinkInput.addEventListener('input', offerSidesLink);
+  sidesLinkInput.addEventListener('paste', function () { setTimeout(offerSidesLink, 0); });
+  sidesLinkOpen.addEventListener('click', function () {
+    sidesLinkNote.className = 'linkNote';
+    sidesLinkNote.textContent = 'Netflix link opened as a PDF in a new tab. Save it, then drop it here.';
   });
   drop.addEventListener('click', function () { fileInput.click(); });
   drop.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') fileInput.click(); });
