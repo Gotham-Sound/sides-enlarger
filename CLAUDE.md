@@ -90,6 +90,15 @@ renderer re-segmenting enlarged lines). It also writes
   photocopies — margins drift, so never hardcode absolute x positions. Use
   **medians**, never modes: per-page drift clusters samples per page, and a mode
   locks onto one page's drift instead of the document center.
+- **Type-size gate (v1.11.1):** calibration also learns the script's type size
+  (`cal.cueSize`, the median size of the cue lines), and a cue or dialogue
+  candidate more than a quarter off it is never script. Call sheets, coverage
+  grids and revision tables are small type (4-7pt against 12pt body) and their
+  rows can land exactly on the cue x with a note beneath at the dialogue x; by
+  position alone that is a cue block, so without the gate the sheet gains two
+  "dialogue" lines, two 1-line "characters", and reader mode reflows the whole
+  sheet (real packet, 2026-09-18). Relative to the document, never an absolute
+  size: photocopied sides get re-scaled. Mirrored in check.py.
 - **Classify** each visual line: cue / dialogue / parenthetical / dual / other.
   Classification also collects cue-led **blocks** (cue + parentheticals +
   dialogue) used for character extraction and highlighting.
@@ -258,6 +267,11 @@ import is RECONCILIATION, not skipped extraction.
 - **Dual dialogue** and **revision-history / call-sheet tables** are left untouched
   (a table row may or may not read as a dual header; either way the page must stay
   identical, and no-dialogue pages contribute no names).
+- **A call sheet is not a no-dialogue page by luck.** Its small-type rows can
+  sit on the script's cue and dialogue x bands; the type-size gate is what keeps
+  them out of classification. The fixture's call-sheet page carries that trap
+  (`smallcue` / `smalldial` tokens) and test.sh asserts the page stays
+  no-dialogue in enlarge mode and absent from reader mode.
 
 ## Rules for changes
 - Never commit real scripts or their renders. `.gitignore` blocks `sides/`,

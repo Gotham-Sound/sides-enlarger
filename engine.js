@@ -101,12 +101,26 @@
       !/(CUT TO|FADE (IN|OUT)|DISSOLVE)/.test(text);
   };
 
+  // A line's type size: the median of its items' sizes (glyph-per-op PDFs
+  // carry one size per glyph). Script body text is one size throughout a
+  // document; call sheets, coverage grids and revision tables are small type.
+  const lineSize = L => median(L.items.map(it => it.size || 0));
+
   function calibrate(pages) {
     const CUE_BAND = [200, 340]; // 2.8"–4.7" initial guess, then refined
     const cueXs = [];
     for (const P of pages) for (const L of P.lines) if (isCueLine(L, CUE_BAND, P.width)) cueXs.push(L.x0);
     if (cueXs.length < 2) return null;
     const cueX = median(cueXs);
+    // the script's type size, from the cue lines (median, like the x bands).
+    // A candidate more than a quarter off it is not script: a call sheet's
+    // caps row at the cue x with a note beneath it at the dialogue x reads
+    // exactly like a cue block by position, but at 5-7pt against 12pt body
+    // text. Never an absolute size: sides get photocopied and re-scaled.
+    const cueSizes = [];
+    for (const P of pages) for (const L of P.lines) if (isCueLine(L, [cueX - 12, cueX + 12], P.width)) cueSizes.push(lineSize(L));
+    const cueSize = cueSizes.length ? median(cueSizes) : 0;
+    const typeOk = L => !cueSize || Math.abs(lineSize(L) - cueSize) <= 0.25 * cueSize;
     // dialogue x0: lines directly below a cue, indented left of it.
     // Skip parentheticals (they sit in their own column) and take the median,
     // not the mode: per-page photocopy drift clusters samples per page, and a
@@ -114,9 +128,9 @@
     const dialXs = [];
     for (const P of pages) {
       for (let i = 0; i < P.lines.length; i++) {
-        if (!isCueLine(P.lines[i], [cueX - 12, cueX + 12], P.width)) continue;
+        if (!typeOk(P.lines[i]) || !isCueLine(P.lines[i], [cueX - 12, cueX + 12], P.width)) continue;
         const nxt = P.lines[i + 1];
-        if (nxt && P.lines[i].y - nxt.y < 3 * LEAD && !/^\(/.test(nxt.text.trim()) &&
+        if (nxt && typeOk(nxt) && P.lines[i].y - nxt.y < 3 * LEAD && !/^\(/.test(nxt.text.trim()) &&
             nxt.x0 > cueX - 130 && nxt.x0 < cueX - 30) dialXs.push(nxt.x0);
       }
     }
@@ -125,7 +139,7 @@
     for (const P of pages) for (const L of P.lines)
       if (/^\(/.test(L.text.trim()) && L.x0 > dialX + 6 && L.x0 < dialX + 70) parenXs.push(L.x0);
     const parenX = parenXs.length ? median(parenXs) : dialX + 43;
-    return { cueX, dialX, parenX };
+    return { cueX, dialX, parenX, cueSize };
   }
 
   // ---------- scriptparse policy interpreter (identity as policy-as-data) ----------
@@ -689,14 +703,17 @@
         }
         dualMode = false; dualCur = null;
       }
-      if (isCueLine(L, [cal.cueX - 12, cal.cueX + 12], P.width)) {
+      // type-size gate (see calibrate): script type only, for cues and for
+      // the dialogue beneath them
+      const typeOk = !cal.cueSize || Math.abs(lineSize(L) - cal.cueSize) <= 0.25 * cal.cueSize;
+      if (typeOk && isCueLine(L, [cal.cueX - 12, cal.cueX + 12], P.width)) {
         L.cls = 'cue'; inBlock = true;
         setDialExtent(L, P.width); // cue extents/star cap for scaling
         cur = { name: normalizeCueName(L.text), cue: L, lines: [] };
         P.blocks.push(cur);
         continue;
       }
-      if (inBlock && (near(L.x0, cal.dialX, 9) || near(L.x0, cal.parenX, 9))) {
+      if (inBlock && typeOk && (near(L.x0, cal.dialX, 9) || near(L.x0, cal.parenX, 9))) {
         L.cls = /^\(\s*MORE\s*\)\s*$/i.test(L.text.trim()) ? 'more' : 'dialogue';
         setDialExtent(L, P.width);
         if (cur) cur.lines.push(L);

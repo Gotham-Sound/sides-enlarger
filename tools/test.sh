@@ -83,6 +83,12 @@ assert "ELEANOR FROM HR" in rej and "FROM" in rej["ELEANOR FROM HR"]["reason"], 
     "ELEANOR FROM HR must be railed with the FROM reason, got %r" % rej
 assert any("ELEANOR FROM HR" in w for w in rep.get("warnings", [])), "railed cue not announced"
 assert rep.get("policyVersion"), "report carries no policyVersion"
+# the call sheet's small-type rows at the script's x bands are not dialogue
+# (type-size gate): the page stays a no-dialogue page and the rows never
+# become characters
+assert "NO SMOKING ON SET" not in names, "call-sheet small-type row seated as a character"
+nodial = {p["page"]: p["dialogueLines"] for p in rep["pages"]}
+assert nodial.get(6) == 0 and nodial.get(9) == 0, "coverage/call-sheet page gained dialogue: %r" % nodial
 if names != expected:
     print("      extracted:", names)
     print("      expected :", expected)
@@ -125,6 +131,14 @@ echo "==> fixture: reader mode"
 node tools/run_engine_node.mjs out/fixture.pdf out/fixture.reader.pdf 1.25 'LAURA=0' --mode=reader \
   >/dev/null 2>out/fixture.reader.err || { echo "    [reader mode] ENGINE ERROR:"; cat out/fixture.reader.err; fail=1; }
 check_one out/fixture.pdf out/fixture.reader.pdf "reader mode @ 1.25" "$RENDER_DIR/fixture_reader"
+python3 - <<'PY' && echo "    [reader skips the call sheet] PASS" || { echo "    [reader skips the call sheet] FAIL"; fail=1; }
+import fitz, json
+doc = fitz.open("out/fixture.reader.pdf")
+txt = "\n".join(doc[i].get_text() for i in range(doc.page_count))
+assert "Vans depart base camp" not in txt and "CALL SHEET" not in txt, "call-sheet text reflowed into reader output"
+rep = json.load(open("out/fixture.reader.pdf.report.json"))
+assert not any(b.endswith("PAGE 42") for b in rep.get("readerBreaks", [])), "reader marked the call-sheet page (34+8=42)"
+PY
 
 # watermarked side: a rotated per-recipient watermark drops a glyph onto minor
 # cue baselines. Without the rotated-item guard those cues fail geometric
