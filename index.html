@@ -257,7 +257,7 @@
          target="_blank" rel="noopener noreferrer">Report an issue or request a feature</a></p>
   </section>
 
-  <footer>Sides Enlarger v1.13.0 &middot; Everything runs in your browser: no uploads, no accounts, no tracking.<br>
+  <footer>Sides Enlarger v1.14.0 &middot; Everything runs in your browser: no uploads, no accounts, no tracking.<br>
     <a href="https://github.com/gothamsound/sides-enlarger/blob/main/README.md#run-it-offline-keep-your-own-copy" target="_blank" rel="noopener noreferrer">How to download this page and run it offline</a><br>
     <a href="https://github.com/gothamsound/sides-enlarger/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">MIT License</a>
     &middot; free software, provided as is with no warranty &middot; &copy; 2026 Gotham Sound and Communications, Inc.</footer>
@@ -1913,7 +1913,9 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.17","_comment":"The cross-la
   // can't hide the highlight. Glyphs are never altered or overlaid with
   // opaque ink — text stays crisp, selectable and printable, and every color
   // is light enough (luminance >= ~0.87) that grayscale printing keeps full
-  // text contrast.
+  // text contrast. Sixteen entries; the first eight are the original set and
+  // their indices never move, since saved preferences and .sceneline files
+  // refer to them.
   const PALETTE = [
     { key: 'yellow',   hex: '#FFF39E', rgb: [1.000, 0.953, 0.620] },
     { key: 'mint',     hex: '#D5F4DA', rgb: [0.835, 0.957, 0.855] },
@@ -1923,6 +1925,19 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.17","_comment":"The cross-la
     { key: 'pink',     hex: '#FBDAE7', rgb: [0.984, 0.855, 0.906] },
     { key: 'sage',     hex: '#E2EDD8', rgb: [0.886, 0.929, 0.847] },
     { key: 'sand',     hex: '#F0E6D1', rgb: [0.941, 0.902, 0.820] },
+    // eight more (v1.14.0, a mixer's day with more than eight speaking parts):
+    // the same luminance floor, hues spaced between the first eight. No neutral
+    // gray: an even grey fill is how sides mark omitted text, and the
+    // grey-region detector (and check.py's mirror of it) would take a gray
+    // highlight for one. Every entry keeps a component spread above 0.05.
+    { key: 'coral',      hex: '#FFD9CD', rgb: [1.000, 0.851, 0.804] },
+    { key: 'rose',       hex: '#FFD8E1', rgb: [1.000, 0.847, 0.882] },
+    { key: 'orchid',     hex: '#F3D9F6', rgb: [0.953, 0.851, 0.965] },
+    { key: 'periwinkle', hex: '#DDE1FC', rgb: [0.867, 0.882, 0.988] },
+    { key: 'aqua',       hex: '#C9F1EC', rgb: [0.788, 0.945, 0.925] },
+    { key: 'lime',       hex: '#E7F6AE', rgb: [0.906, 0.965, 0.682] },
+    { key: 'gold',       hex: '#FFE79C', rgb: [1.000, 0.906, 0.612] },
+    { key: 'tan',        hex: '#EEDCBE', rgb: [0.933, 0.863, 0.745] },
   ];
 
   function roundedRectPath(x, y, w, h, r) {
@@ -3064,7 +3079,7 @@ window.__bootSides__ = function (pdfjs) {
   var exportRow = document.getElementById('exportRow');
   var exportBtn = document.getElementById('exportBtn');
   var exportFullBtn = document.getElementById('exportFullBtn');
-  var APP_VERSION = '1.13.0';
+  var APP_VERSION = '1.14.0';
 
   var prefs = loadPrefs();
   if (prefs.scale >= 1 && prefs.scale <= 1.5) slider.value = prefs.scale;

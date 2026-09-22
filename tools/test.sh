@@ -117,6 +117,42 @@ for scale in 1.0 1.25; do
   fi
 done
 
+echo "==> fixture: highlights on the second eight (LAURA=coral, MERC #1=tan; v1.14.0)"
+outpdf="out/fixture.hl16.pdf"
+node tools/run_engine_node.mjs out/fixture.pdf "$outpdf" 1.25 'LAURA=8;MERC #1=15' \
+  >/dev/null 2>out/fixture.hl16.err || { echo "    [highlights 8..15] ENGINE ERROR:"; cat out/fixture.hl16.err; fail=1; }
+if CHECK_RENDER_DIR="$RENDER_DIR/fixture_hl16" \
+     python3 tools/check.py out/fixture.pdf "$outpdf" "${outpdf}.report.json" \
+     | grep -q '^PASS'; then
+  echo "    [highlights 8..15] PASS"
+else
+  echo "    [highlights 8..15] FAIL"
+  CHECK_RENDER_DIR="$RENDER_DIR/fixture_hl16" \
+    python3 tools/check.py out/fixture.pdf "$outpdf" "${outpdf}.report.json" | grep '  - ' || true
+  fail=1
+fi
+
+echo "==> palette: sixteen entries, unique keys and hexes, light enough to print gray (luma >= 0.87), none an even grey (spread > 0.05)"
+if node --input-type=module -e '
+  import { createRequire } from "node:module";
+  const src = (await import("node:fs")).readFileSync("engine.js", "utf8");
+  const m = src.match(/const PALETTE = \[([\s\S]*?)\n  \];/);
+  const entries = [...m[1].matchAll(/key: \x27([a-z]+)\x27,\s*hex: \x27(#[0-9A-F]{6})\x27, rgb: \[([^\]]+)\]/g)];
+  const keys = entries.map(e => e[1]), hexes = entries.map(e => e[2]);
+  let ok = entries.length === 16 && new Set(keys).size === 16 && new Set(hexes).size === 16;
+  for (const e of entries) {
+    const [r, g, b] = e[3].split(",").map(Number);
+    const hex = [r, g, b].map(c => Math.round(c * 255).toString(16).padStart(2, "0").toUpperCase()).join("");
+    const luma = 0.299 * r + 0.587 * g + 0.114 * b, spread = Math.max(r, g, b) - Math.min(r, g, b);
+    if (luma < 0.87 || spread <= 0.05 || "#" + hex !== e[2]) { console.error("palette:", e[1], "luma", luma.toFixed(3), "rgb", hex, "hex", e[2]); ok = false; }
+  }
+  process.exit(ok ? 0 : 1);
+'; then
+  echo "    [palette] PASS"
+else
+  echo "    [palette] FAIL"; fail=1
+fi
+
 echo "==> fixture: selective enlargement (only LAURA; highlight on unenlarged MERC #1)"
 node tools/run_engine_node.mjs out/fixture.pdf out/fixture.sel.pdf 1.25 'MERC #1=2' --enlarge-only='LAURA' \
   >/dev/null 2>out/fixture.sel.err || { echo "    [selective] ENGINE ERROR:"; cat out/fixture.sel.err; fail=1; }
