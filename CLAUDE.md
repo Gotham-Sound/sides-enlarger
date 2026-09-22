@@ -282,6 +282,17 @@ import is RECONCILIATION, not skipped extraction.
   them out of classification. The fixture's call-sheet page carries that trap
   (`smallcue` / `smalldial` tokens) and test.sh asserts the page stays
   no-dialogue in enlarge mode and absent from reader mode.
+- **A gray highlight is an omitted-text box.** Sides mark omitted scenes with
+  an even grey fill, and `scanGreyRects` (mirrored by check.py) treats text on
+  one as dead. A neutral gray in `PALETTE` therefore makes the verifier report
+  the highlighted dialogue's baselines as vanished (v1.14.0 found this the hard
+  way; the sixteenth color became tan). Every palette entry keeps a component
+  spread above 0.05 and luma at or above 0.87; test.sh's palette guard asserts
+  both, plus sixteen entries with unique keys and hexes. The first eight
+  indices never move: saved preferences and `.sceneline` files refer to them.
+  Sides Helper pins this repo by commit (`tools/engine.lock` there) and bumps
+  after a merge, so a palette or reader change lands in the app only with a
+  pin bump on that side.
 
 ## Rules for changes
 - Never commit real scripts or their renders. `.gitignore` blocks `sides/`,
