@@ -262,6 +262,20 @@ import is RECONCILIATION, not skipped extraction.
   "None of the ticked names are in this PDF…"), and the download button is
   disabled ("Nothing to download yet") unless highlights make the output differ.
   The author fell into the silent version of this state; keep it loud.
+- **UI, pinch-to-size (v1.16.0):** two fingers on the Enlarged preview drive
+  the SAME size slider (finger-distance ratio times the size at gesture start,
+  snapped to 0.05, clamped to the range, 5% dead zone), so the engine re-runs
+  through the slider's own 350 ms debounce, never per frame. The box uses
+  Pointer Events with `touch-action: pan-x pan-y` (one-finger scroll stays
+  the browser's; pinch-zoom is taken from it on WebKit and Chrome), a
+  ctrl+wheel handler for trackpad pinch, and swallows Safari's gesture
+  events. A big readout shows the value under the fingers. The canvas scales
+  live ONLY in Reader mode (the Books/Kindle metaphor fits a reflowing page);
+  in the page-for-page modes it must not, because the page never zooms there
+  and a crowded page may back off, so a live zoom would show something the
+  output will not be. Real-Chrome smoke: dispatch synthetic `PointerEvent`s
+  (pointerType touch, two ids) on `#pinchBox` via `page.evaluate`;
+  `setPointerCapture` throws on synthetic ids and the code try/catches it.
 - **Tests:** `tools/test_sceneline.mjs` (wired into `test.sh`) generates synthetic
   fixtures at runtime (spec §7: never store a `.sceneline`) and asserts acceptance
   (a)-(e) incl. the deep-equal round-trip. `*.sceneline` is gitignored.

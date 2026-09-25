@@ -148,6 +148,18 @@
   .previews.readerMode .pv.orig { display:none; }
   .pv h3 { margin:0 0 6px; font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:#888; }
   .pv canvas { width:100%; height:auto; border:1px solid #ddd; border-radius:8px; background:#fff; display:block; }
+  /* pinch-to-size on the Enlarged preview: the box owns two-finger gestures
+     (pan-x pan-y keeps one-finger scrolling with the browser but takes
+     pinch-zoom away from it, on both WebKit and Chrome); the readout is big
+     enough to read at arm's length while the fingers are on the glass */
+  .pinchBox { position:relative; overflow:hidden; border-radius:8px; touch-action:pan-x pan-y; }
+  .pinchBox canvas { transform-origin:50% 0; will-change:transform; }
+  .pinchReadout { position:absolute; top:12px; right:12px; padding:8px 16px; border-radius:999px;
+                  background:rgba(20,20,20,.78); color:#fff; font:700 26px/1 "Courier New",monospace;
+                  opacity:0; transition:opacity .25s; pointer-events:none; }
+  .pinchReadout.on { opacity:1; transition:none; }   /* instant under the fingers, fades on release */
+  .pinchHint { display:none; font-size:13px; color:#8a8a8a; margin-left:10px; }
+  @media (hover:none) and (pointer:coarse) { .pinchHint { display:inline; } }
   #donate { margin-top:34px; text-align:center; background:#fff; border:1px solid #e3ded2; border-radius:12px;
             padding:18px 16px; }
   #donate p { margin:0 0 12px; color:#555; font-size:14px; }
@@ -197,6 +209,7 @@
     <label for="scale">Size</label>
     <input type="range" id="scale" min="1.0" max="1.5" step="0.05" value="1.25">
     <span id="scaleVal">1.25&times;</span>
+    <span class="pinchHint">or pinch the Enlarged preview</span>
   </div>
 
   <div class="controls" id="modeRow">
@@ -243,7 +256,9 @@
       </div>
       <div class="pvRow">
         <div class="pv orig"><h3>Original</h3><canvas id="pvBefore"></canvas></div>
-        <div class="pv"><h3>Enlarged</h3><canvas id="pvAfter"></canvas></div>
+        <div class="pv"><h3>Enlarged</h3>
+          <div class="pinchBox" id="pinchBox"><canvas id="pvAfter"></canvas>
+            <div class="pinchReadout" id="pinchReadout" aria-live="polite"></div></div></div>
       </div>
     </div>
   </div>
@@ -257,7 +272,7 @@
          target="_blank" rel="noopener noreferrer">Report an issue or request a feature</a></p>
   </section>
 
-  <footer>Sides Enlarger v1.15.0 &middot; Everything runs in your browser: no uploads, no accounts, no tracking.<br>
+  <footer>Sides Enlarger v1.16.0 &middot; Everything runs in your browser: no uploads, no accounts, no tracking.<br>
     <a href="https://github.com/Gotham-Sound/sides-enlarger/blob/main/README.md#run-it-offline-keep-your-own-copy" target="_blank" rel="noopener noreferrer">How to download this page and run it offline</a><br>
     <a href="https://github.com/Gotham-Sound/sides-enlarger/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">MIT License</a>
     &middot; free software, provided as is with no warranty &middot; &copy; 2026 Gotham Sound and Communications, Inc.</footer>
@@ -3145,7 +3160,7 @@ window.__bootSides__ = function (pdfjs) {
   var exportRow = document.getElementById('exportRow');
   var exportBtn = document.getElementById('exportBtn');
   var exportFullBtn = document.getElementById('exportFullBtn');
-  var APP_VERSION = '1.15.0';
+  var APP_VERSION = '1.16.0';
 
   var prefs = loadPrefs();
   if (prefs.scale >= 1 && prefs.scale <= 1.5) slider.value = prefs.scale;
@@ -3797,6 +3812,90 @@ window.__bootSides__ = function (pdfjs) {
     savePrefs(prefs);
     scheduleProcess();
   });
+
+  // pinch-to-size (v1.16.0): two fingers on the Enlarged preview drive the
+  // same slider a thumb does. Finger-distance ratio times the size at
+  // gesture start, snapped to the slider's steps and clamped to its range.
+  // A 5% dead zone keeps a stray second finger from changing anything. The
+  // readout shows the value live; the engine re-runs 350 ms after the
+  // fingers stop (the slider's own debounce), never per frame. In Reader
+  // mode the canvas also scales live under the fingers (the Books/Kindle
+  // pinch-for-font-size metaphor fits a reflowing page); in the page-for-
+  // page modes it does not, because the page never zooms there: only
+  // dialogue grows in place and a crowded page may back off, so a live zoom
+  // would show something the output will not be. Pointer Events cover iOS
+  // Safari 13+ and Chrome with one path; a desktop trackpad pinch arrives as
+  // a wheel event with ctrlKey (both browsers) and steps the size instead.
+  (function () {
+    var box = document.getElementById('pinchBox');
+    var readout = document.getElementById('pinchReadout');
+    if (!box || !readout || !window.PointerEvent) return;
+    var STEP = 0.05, DEAD = 0.05;
+    var pts = {}, ids = [];   // active touch pointers, in arrival order
+    var g = null;             // the gesture: start distance, start size, armed
+    var hideT = null;
+    function dist() { var a = pts[ids[0]], b = pts[ids[1]]; return Math.sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y)); }
+    function snap(v) { var lo = +slider.min, hi = +slider.max; return Math.min(hi, Math.max(lo, Math.round(v / STEP) * STEP)); }
+    function show(v, sticky) {
+      readout.textContent = v.toFixed(2) + '\u00d7';
+      readout.classList.add('on');
+      clearTimeout(hideT);
+      if (!sticky) hideT = setTimeout(function () { readout.classList.remove('on'); }, 700);
+    }
+    function apply(v) {
+      v = snap(v);
+      if (Math.abs(v - +slider.value) > 1e-6) {
+        slider.value = v.toFixed(2);
+        slider.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      show(v, true);
+    }
+    function livePreview(v) {
+      if (prefs.enlargeMode !== 'reader' || !g) { pvA.style.transform = ''; return; }
+      var r = snap(v) / g.s0;
+      pvA.style.transform = Math.abs(r - 1) < 1e-6 ? '' : 'scale(' + r.toFixed(3) + ')';
+    }
+    function end() {
+      g = null; pvA.style.transform = '';
+      if (readout.classList.contains('on')) { clearTimeout(hideT); hideT = setTimeout(function () { readout.classList.remove('on'); }, 700); }
+    }
+    function drop(id) { if (!(id in pts)) return; delete pts[id]; ids.splice(ids.indexOf(id), 1); if (ids.length < 2) end(); }
+    box.addEventListener('pointerdown', function (e) {
+      if (e.pointerType === 'mouse') return;
+      if (!(e.pointerId in pts)) ids.push(e.pointerId);
+      pts[e.pointerId] = { x: e.clientX, y: e.clientY };
+      try { box.setPointerCapture(e.pointerId); } catch (_) { /* synthetic or already captured */ }
+      if (ids.length === 2) g = { d0: dist(), s0: +slider.value, armed: false };
+    });
+    box.addEventListener('pointermove', function (e) {
+      if (!(e.pointerId in pts)) return;
+      pts[e.pointerId] = { x: e.clientX, y: e.clientY };
+      if (!g || ids.length < 2) return;
+      if (e.cancelable) e.preventDefault();
+      var r = dist() / g.d0;
+      if (!g.armed) {
+        if (Math.abs(r - 1) < DEAD) return;       // dead zone: a brush is not a pinch
+        g.armed = true; g.d0 = dist(); r = 1;      // rebase so the dead zone does not count
+      }
+      var v = g.s0 * r;
+      livePreview(v);
+      apply(v);
+    });
+    box.addEventListener('pointerup', function (e) { drop(e.pointerId); });
+    box.addEventListener('pointercancel', function (e) { drop(e.pointerId); });
+    box.addEventListener('wheel', function (e) {
+      if (!e.ctrlKey) return;                     // trackpad pinch (Chrome, Safari); plain scrolling stays the browser's
+      e.preventDefault();
+      g = { d0: 1, s0: +slider.value, armed: true };
+      var v = +slider.value + (e.deltaY < 0 ? STEP : -STEP);
+      livePreview(v); apply(v); end();
+    }, { passive: false });
+    // Safari's proprietary gesture events would still zoom the page from
+    // under the box on older WebKit; swallow them here
+    ['gesturestart', 'gesturechange', 'gestureend'].forEach(function (t) {
+      box.addEventListener(t, function (e) { e.preventDefault(); });
+    });
+  })();
 
   // download
   dlBtn.addEventListener('click', function () {

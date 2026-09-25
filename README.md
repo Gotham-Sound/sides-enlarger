@@ -30,7 +30,8 @@ production scripts never leave the device.
    pages to check.
 4. Tap **Download enlarged PDF**. Print it or read it on your device.
 
-There's a **size slider** (1.0× – 1.5×) if you want it bigger or smaller. It
+There's a **size slider** (1.0× – 1.5×) if you want it bigger or smaller (on a
+phone, pinching the Enlarged preview does the same thing). It
 remembers your setting on that device. You don't have to touch anything else.
 
 A **"Make bigger"** switch picks what grows:
