@@ -89,6 +89,14 @@ assert rep.get("policyVersion"), "report carries no policyVersion"
 assert "NO SMOKING ON SET" not in names, "call-sheet small-type row seated as a character"
 nodial = {p["page"]: p["dialogueLines"] for p in rep["pages"]}
 assert nodial.get(6) == 0 and nodial.get(9) == 0, "coverage/call-sheet page gained dialogue: %r" % nodial
+# the call sheet (page 9) is small type throughout: the shared script-page
+# gate (policy script_page, hub #103) excludes the whole page, names it on
+# the never-silent rail and in a warning, and its scene-table row never
+# becomes a slugline; the script-sized coverage page (6) is admitted
+nsp = [p["page"] for p in rep.get("nonScriptPages", [])]
+assert nsp == [9], "script-page gate rail should list exactly the call sheet: %r" % nsp
+assert any("script-page gate" in w for w in rep.get("warnings", [])), "non-script page not announced"
+assert not any(s.get("page") == 9 for s in rep.get("sluglines", [])), "call-sheet scene-table row seated as a slugline"
 if names != expected:
     print("      extracted:", names)
     print("      expected :", expected)

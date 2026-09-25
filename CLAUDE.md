@@ -91,15 +91,32 @@ renderer re-segmenting enlarged lines). It also writes
   photocopies — margins drift, so never hardcode absolute x positions. Use
   **medians**, never modes: per-page drift clusters samples per page, and a mode
   locks onto one page's drift instead of the document center.
-- **Type-size gate (v1.11.1):** calibration also learns the script's type size
-  (`cal.cueSize`, the median size of the cue lines), and a cue or dialogue
-  candidate more than a quarter off it is never script. Call sheets, coverage
-  grids and revision tables are small type (4-7pt against 12pt body) and their
-  rows can land exactly on the cue x with a note beneath at the dialogue x; by
-  position alone that is a cue block, so without the gate the sheet gains two
+- **Type-size gate (v1.11.1) + script-page gate (v1.15.0, hub #103 / v0.2.7):**
+  calibration learns the script's type size (`cal.cueSize`, the median size of
+  the cue lines), and a cue or dialogue candidate more than `1 -
+  script_page.min_median_size_ratio` off it (a quarter, read from the policy
+  via `typeTol()`) is never script. Call sheets, coverage grids and revision
+  tables are small type (4-7pt against 12pt body) and their rows can land
+  exactly on the cue x with a note beneath at the dialogue x; by position
+  alone that is a cue block, so without the gate the sheet gains two
   "dialogue" lines, two 1-line "characters", and reader mode reflows the whole
   sheet (real packet, 2026-09-18). Relative to the document, never an absolute
-  size: photocopied sides get re-scaled. Mirrored in check.py.
+  size: photocopied sides get re-scaled. Above it sits the hub's PAGE-level
+  gate (`gateScriptPages`, before calibration): a page whose median line size
+  is below the ratio of the document's median line size is not script and
+  contributes nothing that seats (no calibration sample, no classification,
+  no cues, no sluglines; passes through byte-identical; reader mode skips it).
+  `pageIsScript` / `scriptPageStats` in `compilePolicy` mirror the hub's
+  `build_matrix.py` and are corpus-pinned (`vectors/script_page.json`, both
+  blocks). Stats are the contract: lines = distinct unrotated baselines after
+  the burn-in strip, size = median of line sizes, size denominator = median
+  over populated pages, density denominator = median over size-passing pages.
+  The density arm (`max_line_ratio`) is policy data and ships null (disabled)
+  on this bench's nine-packet measurement; never arm it locally. **Never
+  silent:** excluded pages land on `report.nonScriptPages` (page, lines,
+  medianLineSize, docMedianLineSize), in a document warning and in the page's
+  own note. Both gates are mirrored in check.py (which reads the ratio from
+  the vendored policy).
 - **Classify** each visual line: cue / dialogue / parenthetical / dual / other.
   Classification also collects cue-led **blocks** (cue + parentheticals +
   dialogue) used for character extraction and highlighting.
@@ -278,10 +295,14 @@ import is RECONCILIATION, not skipped extraction.
   (a table row may or may not read as a dual header; either way the page must stay
   identical, and no-dialogue pages contribute no names).
 - **A call sheet is not a no-dialogue page by luck.** Its small-type rows can
-  sit on the script's cue and dialogue x bands; the type-size gate is what keeps
-  them out of classification. The fixture's call-sheet page carries that trap
-  (`smallcue` / `smalldial` tokens) and test.sh asserts the page stays
-  no-dialogue in enlarge mode and absent from reader mode.
+  sit on the script's cue and dialogue x bands. Two gates keep them out: the
+  page-level script-page gate excludes a sheet set small throughout (the
+  fixture's page 9: 7pt rows, one 14pt title, a scene-table row carrying a
+  real slugline), and the per-line type-size gate catches small rows on a
+  script-sized page (the fixture's coverage page 6 carries the `smallcue` /
+  `smalldial` trap plus two dual-cue grid rows). test.sh asserts page 9 is on
+  `nonScriptPages` and contributes no slugline, both pages stay no-dialogue
+  in enlarge mode, and the sheet is absent from reader mode.
 - **A gray highlight is an omitted-text box.** Sides mark omitted scenes with
   an even grey fill, and `scanGreyRects` (mirrored by check.py) treats text on
   one as dead. A neutral gray in `PALETTE` therefore makes the verifier report

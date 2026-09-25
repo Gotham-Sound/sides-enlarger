@@ -89,8 +89,10 @@ const walk = (v, p) => {
 };
 walk(vendored, 'policy');
 
-const countCases = obj => Array.isArray(obj.cases) ? obj.cases.length
-  : Object.keys(obj).filter(k => Array.isArray(obj[k])).reduce((n, k) => n + obj[k].length, 0);
+// a file's case count is the sum of its top-level arrays: `cases` alone for
+// most families, `cases` + `stats_cases` for script_page, the three named
+// blocks for burn_in
+const countCases = obj => Object.keys(obj).filter(k => Array.isArray(obj[k])).reduce((n, k) => n + obj[k].length, 0);
 const vectors = {};
 console.log('\n| vector file | cases (manifest / file) | sha256 vs manifest | JSON.parse |');
 console.log('|---|---|---|---|');
@@ -151,6 +153,16 @@ if (vectors.burn_in) {
     : c.kind === 'threshold' ? pol.repeatThreshold(c.pages)
     : pol.detectRepeatedBurnin(c.pages, c.page_heights), 'signal-2 cells / thresholds / strip decisions');
 } else run('burn_in', null);
+if (vectors.script_page) {
+  const v = vectors.script_page;
+  const cases = [
+    ...(v.cases || []).map(c => Object.assign({ kind: 'gate', input: [c.n_lines, c.median_line_size, c.doc_median_lines, c.doc_median_size, c.max_line_ratio] }, c)),
+    ...(v.stats_cases || []).map(c => Object.assign({ kind: 'stats', input: c.pages }, c)),
+  ];
+  run('script_page', cases, c => c.kind === 'gate'
+    ? pol.pageIsScript(c.n_lines, c.median_line_size, c.doc_median_lines, c.doc_median_size, { maxLineRatio: c.max_line_ratio })
+    : pol.scriptPageStats(c.pages), 'page_is_script gate (per-case max_line_ratio) / script_page_stats denominators');
+} else run('script_page', null);
 if (vectors.margin_rows) {
   summary.push(`| \`vectors/margin_rows.json\` | n/a (${countCases(vectors.margin_rows)}) | classify_margin_row: no consumer on this bench (no scene inventory); consumable, not mirrored | n/a |`);
   console.log(`  margin_rows.json: n/a (${countCases(vectors.margin_rows)} cases; no consumer on this bench, not mirrored)`);

@@ -47,7 +47,9 @@ A **"Make bigger"** switch picks what grows:
   start to touch or where text would escape a table cell, and pages that hit
   a limit say which one. Pages with no dialogue at all (title pages,
   coverage, call sheets, revision tables) are passed through untouched in
-  every mode.
+  every mode. A page set in small type throughout (a call sheet riding in
+  front of the sides) is excluded as a whole by the shared script-page gate
+  and named in a warning, so nothing on it is ever mistaken for dialogue.
 
 And set apart from those three, because it deliberately breaks the
 same-page-count rule:

@@ -382,25 +382,70 @@ def collect_blocks(lines):
     return blocks
 
 
+# ---- script-page gate (hub #103, policy script_page; build_matrix.py copied
+# where pure): a page whose median line size is below the ratio of the
+# document's median is not script and contributes nothing that seats ----
+_SCRIPT_PAGE = _POLICY.get("script_page", {})
+_SIZE_RATIO = _SCRIPT_PAGE.get("min_median_size_ratio", 0.75)
+if _SIZE_RATIO is None:
+    _SIZE_RATIO = 0.75
+TYPE_TOL = 1 - _SIZE_RATIO  # the per-line tolerance, wired to the same ratio
+
+
+def page_is_script(n_lines, median_line_size, doc_median_lines, doc_median_size):
+    if n_lines <= 0 or doc_median_size <= 0:
+        return True
+    if median_line_size < _SIZE_RATIO * doc_median_size:
+        return False
+    max_line_ratio = _SCRIPT_PAGE.get("max_line_ratio")
+    if max_line_ratio is not None and doc_median_lines > 0:
+        if n_lines > max_line_ratio * doc_median_lines:
+            return False
+    return True
+
+
+def script_page_stats(page_stats):
+    populated = [(n, ms) for n, ms in page_stats if n > 0]
+    if len(populated) < 2:
+        return (0.0, 0.0)
+    doc_median_size = statistics.median(ms for _, ms in populated)
+    script_sized = [n for n, ms in populated if ms >= _SIZE_RATIO * doc_median_size]
+    doc_median_lines = statistics.median(script_sized) if script_sized else 0.0
+    return (float(doc_median_lines), float(doc_median_size))
+
+
+def non_script_pages(pages_lines):
+    """indices of the pages the shared gate excludes (lines are the
+    verifier's own unrotated baselines after its burn-in strip)"""
+    stats = [(len(lines), statistics.median(L["size"] for L in lines) if lines else 0.0)
+             for lines in pages_lines]
+    dml, dms = script_page_stats(stats)
+    return {i for i, (n, ms) in enumerate(stats) if not page_is_script(n, ms, dml, dms)}
+
+
 def classify_doc(doc):
     burn = burn_spans_cached(doc)
     pages_lines = [get_lines(p, burn[i]) for i, p in enumerate(doc)]
     widths = [p.rect.width for p in doc]
-    cue_xs = [L["x0"] for lines, W in zip(pages_lines, widths) for L in lines if is_cue(L, 200, 340, W)]
+    # the script-page gate runs first: excluded pages take no part in
+    # calibration and every line on them is 'other' (mirrors the engine)
+    excluded = non_script_pages(pages_lines)
+    script = [(lines, W) for i, (lines, W) in enumerate(zip(pages_lines, widths)) if i not in excluded]
+    cue_xs = [L["x0"] for lines, W in script for L in lines if is_cue(L, 200, 340, W)]
     assert len(cue_xs) >= 2, "verifier could not find character cues"
     cue_x = statistics.median(cue_xs)
     # mirror the engine's type-size gate: the script's type size is the
     # median over its cue lines; a cue or dialogue candidate more than a
     # quarter off it (a call sheet's small-type rows at the script's x bands)
     # is never script
-    cue_sizes = [L["size"] for lines, W in zip(pages_lines, widths) for L in lines
+    cue_sizes = [L["size"] for lines, W in script for L in lines
                  if is_cue(L, cue_x - 12, cue_x + 12, W)]
     cue_size = statistics.median(cue_sizes) if cue_sizes else 0
 
     def type_ok(L):
-        return not cue_size or abs(L["size"] - cue_size) <= 0.25 * cue_size
+        return not cue_size or abs(L["size"] - cue_size) <= TYPE_TOL * cue_size
     dial_xs = []
-    for lines, W in zip(pages_lines, widths):
+    for lines, W in script:
         for i, L in enumerate(lines):
             if type_ok(L) and is_cue(L, cue_x - 12, cue_x + 12, W) and i + 1 < len(lines):
                 nxt = lines[i + 1]
@@ -408,11 +453,15 @@ def classify_doc(doc):
                         and not nxt["text"].strip().startswith("(")):
                     dial_xs.append(nxt["x0"])
     dial_x = statistics.median(dial_xs)
-    paren_xs = [L["x0"] for lines in pages_lines for L in lines
+    paren_xs = [L["x0"] for lines, W in script for L in lines
                 if L["text"].strip().startswith("(") and dial_x + 6 < L["x0"] < dial_x + 70]
     paren_x = statistics.median(paren_xs) if paren_xs else dial_x + 43
 
-    for lines, W in zip(pages_lines, widths):
+    for pi, (lines, W) in enumerate(zip(pages_lines, widths)):
+        if pi in excluded:
+            for L in lines:
+                L["cls"] = "other"
+            continue
         in_block, dual, prev_y = False, False, None
         for L in lines:
             if prev_y is not None and L["y"] - prev_y > 28:
