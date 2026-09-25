@@ -1,6 +1,6 @@
 {
   "name": "sides-enlarger",
-  "version": "1.14.0",
+  "version": "1.14.1",
   "description": "In-browser tool that enlarges screenplay 'sides' dialogue ~25% while keeping every page pixel-identical. No server, no uploads.",
   "scripts": {
     "build": "node build.mjs",
