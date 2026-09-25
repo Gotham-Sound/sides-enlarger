@@ -125,7 +125,7 @@ own copy and run it with nothing connected:
   (or press Ctrl+S / Cmd+S) and keep `index.html` somewhere handy. Double-click
   it any time, on or offline.
 - **Or download it from GitHub:** grab
-  [index.html](https://github.com/gothamsound/sides-enlarger/raw/main/index.html)
+  [index.html](https://github.com/Gotham-Sound/sides-enlarger/raw/main/index.html)
   and open it in any browser.
 - **On a phone or tablet:** save the file through your browser's share or
   download menu, then open it from Files (iPhone) or Downloads (Android).
