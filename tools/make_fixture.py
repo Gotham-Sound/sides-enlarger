@@ -187,6 +187,18 @@ PAGES = [
         ("action", "SIDES FOR 07/13 - SCENES 12, 14, 18A"),
         ("blank",), ("blank",),
         ("action", "COVERAGE: D. KOVACS / EP. 407 / NIGHT WORK"),
+        ("blank",),
+        # a SCRIPT-SIZED no-dialogue page (the script-page gate admits it)
+        # carrying both per-line traps: a column grid that reads as
+        # dual-cue rows (zero-line "characters" without the no-dialogue
+        # guard), and a 7pt caps row at the cue x with a 7pt note at the
+        # dialogue x (a cue block by position alone; the per-line type-size
+        # gate must refuse it here, where the page gate does not fire)
+        ("dual_cues", "CAMERA", "SOUND"),
+        ("dual_cues", "CAST", "D/N"),
+        ("blank",),
+        ("smallcue", "NO SMOKING ON SET"),
+        ("smalldial", "*** Crew parking is in the north lot ***"),
     ],
     # pages 7-8 — the SAME form XObject (shared stationery with text) drawn
     # on both pages: a multi-use form can only be mutated once, so the engine
@@ -211,28 +223,24 @@ PAGES = [
         ("blank",),
         ("sharedform",),
     ],
-    # page 9 — CALL SHEET. No dialogue anywhere, but a two-column grid of
-    # all-caps labels that reads as a stack of dual-dialogue cue rows. Dual
-    # names bypass the dialogue-follow noise filter, so without the
-    # no-dialogue page guard every one of these column headings lands in the
-    # character list as a zero-line "character".
+    # page 9 — CALL SHEET, set in 7pt throughout like the real thing (one
+    # 14pt title). The shared script-page gate (hub #103, policy
+    # script_page) excludes the whole page: its median line size is far
+    # below the document's, so nothing on it seats. That covers the two
+    # field traps at page level: the scene-table row that carries a real
+    # slugline (the hub's phantom-scene case) and the caps row at the cue x
+    # with a note at the dialogue x (a cue block by position alone). The
+    # page must stay no-dialogue in every mode, contribute no slugline, be
+    # absent from reader mode, and be named on report.nonScriptPages.
     [
         ("head", "CALL SHEET - DAY 6 OF 8"),
-        ("blank",),
-        ("dual_cues", "SCENE", "SET/ DESCRIPTION"),
-        ("dual_cues", "CAST", "D/N"),
-        ("dual_cues", "PAGES LOCATION", "ELEMENTS"),
-        ("dual_cues", "CAMERA", "SOUND"),
-        ("dual_cues", "HMU/ WARDROBE", "SPFX MAKEUP"),
-        ("dual_cues", "RPT RPT TO", "# STAND INS"),
-        ("blank",),
-        ("action", "NO CREW PARKING ON SET--"),
-        ("blank",),
-        # the small-type trap (real call sheet, 2026-09-18): a 7pt caps row at
-        # the cue x with a 7pt note beneath it at the dialogue x reads as a
-        # cue block by position alone. The type-size gate must refuse it, or
-        # the sheet gains "dialogue": two lines grow, the rows become 1-line
-        # "characters", and reader mode reflows the whole sheet.
+        ("small", "SCENE   SET/ DESCRIPTION   CAST   D/N   PAGES"),
+        ("small", "12   INT. EVIDENCE ROOM - NIGHT   1, 2   N   2 3/8"),
+        ("small", "14   EXT. PRECINCT STEPS - DAY   1, 3, 4   D   1 1/8"),
+        ("small", "18A   INT. INTERVIEW ROOM B - NIGHT   1, 2, 5   N   3 4/8"),
+        ("small", "CAMERA   SOUND   HMU/ WARDROBE   SPFX MAKEUP"),
+        ("small", "RPT RPT TO   # STAND INS   ELEMENTS   LOCATION"),
+        ("small", "NO CREW PARKING ON SET--"),
         ("smallcue", "NO SMOKING ON SET"),
         ("smalldial", "*** Vans depart base camp at 6am sharp ***"),
     ],
@@ -429,10 +437,12 @@ def _draw_page(c, pi, page, watermark=False, burnin=False):
             c.restoreState()
             y -= LEAD
             continue
-        if kind in ("smallcue", "smalldial"):
-            # call-sheet type: 7pt at the script's cue / dialogue x, tight pitch
+        if kind in ("smallcue", "smalldial", "small"):
+            # call-sheet type: 7pt at the script's cue / dialogue x (or the
+            # action x for body rows), tight pitch
             c.setFont(FONT, 7)
-            c.drawString((X_CUE if kind == "smallcue" else X_DIAL) + drift, y, tok[1])
+            x_small = X_CUE if kind == "smallcue" else (X_DIAL if kind == "smalldial" else X_ACTION)
+            c.drawString(x_small + drift, y, tok[1])
             c.setFont(FONT, SIZE)
             y -= 9
             continue

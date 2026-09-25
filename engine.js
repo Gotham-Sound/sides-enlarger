@@ -140,6 +140,14 @@
   // carry one size per glyph). Script body text is one size throughout a
   // document; call sheets, coverage grids and revision tables are small type.
   const lineSize = L => median(L.items.map(it => it.size || 0));
+  // per-line type-size tolerance: one minus the shared script-page gate's
+  // ratio (policy script_page.min_median_size_ratio, 0.75 -> a quarter), so
+  // the line filter and the page gate move together on a policy bump
+  const typeTol = () => {
+    const sp = pol().data && pol().data.script_page;
+    const r = sp && typeof sp.min_median_size_ratio === 'number' ? sp.min_median_size_ratio : 0.75;
+    return 1 - r;
+  };
 
   function calibrate(pages) {
     const CUE_BAND = [200, 340]; // 2.8"–4.7" initial guess, then refined
@@ -155,7 +163,7 @@
     const cueSizes = [];
     for (const P of pages) for (const L of P.lines) if (isCueLine(L, [cueX - 12, cueX + 12], P.width)) cueSizes.push(lineSize(L));
     const cueSize = cueSizes.length ? median(cueSizes) : 0;
-    const typeOk = L => !cueSize || Math.abs(lineSize(L) - cueSize) <= 0.25 * cueSize;
+    const typeOk = L => !cueSize || Math.abs(lineSize(L) - cueSize) <= typeTol() * cueSize;
     // dialogue x0: lines directly below a cue, indented left of it.
     // Skip parentheticals (they sit in their own column) and take the median,
     // not the mode: per-page photocopy drift clusters samples per page, and a
@@ -387,8 +395,31 @@
         return Array.from(drop).sort((a, b) => a - b);
       });
     };
+    // script-page gate (hub #103, policy script_page): mirrors
+    // build_matrix.page_is_script / script_page_stats, pure and vectored.
+    // pageIsScript's opts.maxLineRatio overrides the policy's density arm
+    // (null = disabled), the shape the conformance vectors use.
+    const scriptRule = () => policy.script_page || {};
+    const sizeRatio = () => (typeof scriptRule().min_median_size_ratio === 'number' ? scriptRule().min_median_size_ratio : 0.75);
+    const pageIsScript = (nLines, medianLineSize, docMedianLines, docMedianSize, opts) => {
+      if (!(nLines > 0) || !(docMedianSize > 0)) return true;
+      if (medianLineSize < sizeRatio() * docMedianSize) return false;
+      const maxLineRatio = (opts && Object.prototype.hasOwnProperty.call(opts, 'maxLineRatio')) ? opts.maxLineRatio
+        : (scriptRule().max_line_ratio == null ? null : scriptRule().max_line_ratio);
+      if (maxLineRatio != null && docMedianLines > 0 && nLines > maxLineRatio * docMedianLines) return false;
+      return true;
+    };
+    const scriptPageStats = pageStats => {
+      const populated = pageStats.filter(p => p[0] > 0);
+      if (populated.length < 2) return [0, 0];
+      const docMedianSize = median(populated.map(p => p[1]));
+      const scriptSized = populated.filter(p => p[1] >= sizeRatio() * docMedianSize).map(p => p[0]);
+      const docMedianLines = scriptSized.length ? median(scriptSized) : 0;
+      return [docMedianLines, docMedianSize];
+    };
     return { version: policy.policy_version, data: policy, normalizeText, normCue, fold, foldCandidates, partOf, parts,
-      cueCharsetOk, cueSemanticOk, cueGateOk, cueRejectReason, splitDualHeader, wordCell, repeatThreshold, detectRepeatedBurnin };
+      cueCharsetOk, cueSemanticOk, cueGateOk, cueRejectReason, splitDualHeader, wordCell, repeatThreshold, detectRepeatedBurnin,
+      pageIsScript, scriptPageStats };
   }
   // The compiled policy for this engine instance (set by createSidesEngine).
   let POL = null;
@@ -722,6 +753,32 @@
     return { runs, pages: pagesHit, rail: [...rail.values()] };
   }
 
+  // scriptparse script-page gate (hub #103, policy script_page, v0.2.7): a
+  // page whose median line size falls below the shared ratio of the
+  // document's median line size is not script and contributes nothing that
+  // seats: no cues, no sluglines, no dialogue, so it passes through
+  // byte-identical and reader mode skips it. Stats are the hub's contract:
+  // lines = distinct unrotated baselines after the burn-in strip (P.lines;
+  // rotated items never reach line-building), size = the median of their
+  // line sizes; denominators from the shared scriptPageStats. The density
+  // arm (max_line_ratio) is policy data and ships disabled. Never silent:
+  // every excluded page lands on report.nonScriptPages and in a warning.
+  const NON_SCRIPT_NOTE = 'not a script page (type set below the shared script-page gate): left at original size';
+  function gateScriptPages(pages) {
+    const stats = pages.map(P => [P.lines.length, P.lines.length ? median(P.lines.map(lineSize)) : 0]);
+    const [docMedianLines, docMedianSize] = pol().scriptPageStats(stats);
+    const rail = [];
+    pages.forEach((P, i) => {
+      const [n, ms] = stats[i];
+      P.nonScript = !pol().pageIsScript(n, ms, docMedianLines, docMedianSize);
+      if (P.nonScript) rail.push({ page: P.index, lines: n, medianLineSize: +ms.toFixed(2), docMedianLineSize: +docMedianSize.toFixed(2) });
+    });
+    return { rail, docMedianLines, docMedianSize };
+  }
+  const nonScriptWarning = rail => 'Page' + (rail.length === 1 ? ' ' : 's ') + rail.map(r => r.page).join(', ')
+    + ' excluded by the shared script-page gate (scriptparse policy ' + POL.version + '): type set at '
+    + rail.map(r => r.medianLineSize).join('/') + 'pt against the document\'s ' + rail[0].docMedianLineSize
+    + 'pt (call sheets, coverage grids). Nothing on ' + (rail.length === 1 ? 'it' : 'them') + ' enlarges or seats; if one is a real script page, report it.';
   function classifyPage(P, cal) {
     // walk top -> bottom; dialogue = in a block opened by a character cue.
     // Also collects the cue-led blocks (P.blocks) used for character
@@ -765,7 +822,7 @@
       }
       // type-size gate (see calibrate): script type only, for cues and for
       // the dialogue beneath them
-      const typeOk = !cal.cueSize || Math.abs(lineSize(L) - cal.cueSize) <= 0.25 * cal.cueSize;
+      const typeOk = !cal.cueSize || Math.abs(lineSize(L) - cal.cueSize) <= typeTol() * cal.cueSize;
       if (typeOk && isCueLine(L, [cal.cueX - 12, cal.cueX + 12], P.width)) {
         L.cls = 'cue'; inBlock = true;
         setDialExtent(L, P.width); // cue extents/star cap for scaling
@@ -1795,11 +1852,16 @@
       if (totalChars < 40) throw scannedError();
       for (const P of pages) P.live = P.items;
       const burn = stripRepeatedBurnIn(pages);
-      const cal = calibrate(pages);
-      if (cal) for (const P of pages) classifyPage(P, cal);
+      const gate = gateScriptPages(pages);
+      const cal = calibrate(pages.filter(P => !P.nonScript));
+      if (cal) for (const P of pages) {
+        if (P.nonScript) { P.blocks = []; P.dualNames = []; P.dualBlocks = []; continue; }
+        classifyPage(P, cal);
+      }
       return {
         calibration: cal,
         policyVersion: POL.version,
+        nonScriptPages: gate.rail,
         characters: cal ? collectCharacters(pages) : [],
         rejectedCues: cal ? collectRejectedCues(pages) : [],
         burnIns: burn.rail,
@@ -2141,9 +2203,12 @@
         }
       }
 
-      const cal = calibrate(pages);
+      const gate = gateScriptPages(pages);
+      const cal = calibrate(pages.filter(P => !P.nonScript));
       const report = { requestedScale: requested, mode, calibration: cal, pages: [], warnings: [] };
       report.enlargeOnly = enlargeSet ? Array.from(enlargeSet) : null;
+      report.nonScriptPages = gate.rail;
+      if (gate.rail.length) report.warnings.push(nonScriptWarning(gate.rail));
       if (wasEncrypted) report.warnings.push('Input was permission-locked (encrypted); output is a decrypted copy — treat it with the same care as the original.');
       if (greyRuns) report.warnings.push('Grey-shaded (omitted) regions detected: ' + greyRuns + ' text run' + (greyRuns === 1 ? '' : 's') + ' across ' + greyPages + ' page' + (greyPages === 1 ? '' : 's') + ' left untouched — not enlarged, not highlighted, and not counted toward the character list.');
       if (wmSet.size) {
@@ -2162,6 +2227,7 @@
       // classify + per-page scale
       const widths = [];
       for (const P of pages) {
+        if (P.nonScript) { P.blocks = []; P.dualNames = []; P.dualBlocks = []; continue; }
         classifyPage(P, cal);
         for (const L of P.lines) if (L.cls === 'dialogue') widths.push((L.dx1 != null ? L.dx1 : L.x1) - (L.dx0 != null ? L.dx0 : L.x0));
       }
@@ -2462,7 +2528,7 @@
           // sheets and revision tables don't, and are never enlarged
           if (!pageReport.dialogueLines) {
             pageReport.appliedScale = 1;
-            if (requested > 1.001) pageReport.warnings.push('no dialogue on this page: left at original size (title, coverage and call-sheet pages are not enlarged)');
+            if (requested > 1.001) pageReport.warnings.push(P.nonScript ? NON_SCRIPT_NOTE : 'no dialogue on this page: left at original size (title, coverage and call-sheet pages are not enlarged)');
             continue;
           }
 
@@ -2628,7 +2694,7 @@
         // the dual-cue heuristic, so without this it reports itself as a
         // dual-dialogue block instead of a non-script page.
         if (!pageReport.dialogueLines) {
-          if (requested > 1.001) pageReport.warnings.push('no dialogue on this page: left at original size (title, coverage and call-sheet pages are not enlarged)');
+          if (requested > 1.001) pageReport.warnings.push(P.nonScript ? NON_SCRIPT_NOTE : 'no dialogue on this page: left at original size (title, coverage and call-sheet pages are not enlarged)');
         } else if (P.hasDual) pageReport.warnings.push('dual-dialogue block detected — left at original size');
         pageReport.enlargedLines = P.lines.filter(l => l.cls === 'dialogue' && l.enlarge !== false).length;
         if (!pageReport.enlargedLines) pageReport.appliedScale = 1;
