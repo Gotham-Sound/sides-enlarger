@@ -131,6 +131,10 @@
         font-size:15px; line-height:1; display:flex; align-items:center; justify-content:center; padding:0; }
   .sw.none { background:#fff; color:#999; }
   .sw.sel { border-color:#1a1a1a; font-weight:700; }
+  /* a swatch another listed character already uses: a double ring says so
+     BEFORE the tap; sharing is allowed, the note under the row says who */
+  .sw.used { box-shadow: inset 0 0 0 2px #fff, inset 0 0 0 4px rgba(0,0,0,.28); }
+  .swShared { margin:5px 0 0; font-size:12px; color:#8a5a00; }
   .chAdd { display:flex; gap:8px; margin-top:12px; }
   .chAdd input { flex:1; min-width:0; padding:9px 10px; border:1px solid #ccc; border-radius:8px;
                  font-size:14px; text-transform:uppercase; }
@@ -257,7 +261,7 @@
          target="_blank" rel="noopener noreferrer">Report an issue or request a feature</a></p>
   </section>
 
-  <footer>Sides Enlarger v1.15.0 &middot; Everything runs in your browser: no uploads, no accounts, no tracking.<br>
+  <footer>Sides Enlarger v1.16.0 &middot; Everything runs in your browser: no uploads, no accounts, no tracking.<br>
     <a href="https://github.com/Gotham-Sound/sides-enlarger/blob/main/README.md#run-it-offline-keep-your-own-copy" target="_blank" rel="noopener noreferrer">How to download this page and run it offline</a><br>
     <a href="https://github.com/Gotham-Sound/sides-enlarger/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">MIT License</a>
     &middot; free software, provided as is with no warranty &middot; &copy; 2026 Gotham Sound and Communications, Inc.</footer>
@@ -3145,7 +3149,7 @@ window.__bootSides__ = function (pdfjs) {
   var exportRow = document.getElementById('exportRow');
   var exportBtn = document.getElementById('exportBtn');
   var exportFullBtn = document.getElementById('exportFullBtn');
-  var APP_VERSION = '1.15.0';
+  var APP_VERSION = '1.16.0';
 
   var prefs = loadPrefs();
   if (prefs.scale >= 1 && prefs.scale <= 1.5) slider.value = prefs.scale;
@@ -3204,7 +3208,13 @@ window.__bootSides__ = function (pdfjs) {
     return bits.join(' · ');
   }
 
-  function swatchRow(c) {
+  // names on the rail (this packet) that hold palette index idx, other than name
+  function othersWith(idx, name, visible) {
+    return Object.keys(prefs.charColors).filter(function (n) {
+      return n !== name && prefs.charColors[n] === idx && visible[n];
+    });
+  }
+  function swatchRow(c, visible) {
     var row = document.createElement('div');
     row.className = 'swRow';
     var noneBtn = document.createElement('button');
@@ -3217,13 +3227,30 @@ window.__bootSides__ = function (pdfjs) {
     PALETTE.forEach(function (p, i) {
       var btn = document.createElement('button');
       btn.type = 'button';
-      btn.className = 'sw' + (prefs.charColors[c.name] === i ? ' sel' : '');
+      var others = othersWith(i, c.name, visible);
+      btn.className = 'sw' + (prefs.charColors[c.name] === i ? ' sel' : '') + (others.length ? ' used' : '');
       btn.style.background = p.hex;
-      btn.title = p.key;
+      btn.title = p.key + (others.length ? ' (also ' + others.join(', ') + ')' : '');
       btn.textContent = prefs.charColors[c.name] === i ? '✓' : '';
       btn.addEventListener('click', function () { assignColor(c.name, i); });
       row.appendChild(btn);
     });
+    // sharing a color is allowed (v1.16.0): say so, plainly, under the row.
+    // Never a dialog: a tired reader taps through dialogs.
+    var mine = prefs.charColors[c.name];
+    if (mine != null) {
+      var shared = othersWith(mine, c.name, visible);
+      if (shared.length) {
+        var wrap = document.createElement('div');
+        wrap.appendChild(row);
+        var note = document.createElement('p');
+        note.className = 'swShared';
+        note.textContent = 'Same color as ' + (shared.length <= 3 ? shared.join(', ')
+          : shared.slice(0, 2).join(', ') + ' and ' + (shared.length - 2) + ' more');
+        wrap.appendChild(note);
+        return wrap;
+      }
+    }
     return row;
   }
 
@@ -3232,6 +3259,8 @@ window.__bootSides__ = function (pdfjs) {
     charRail.className = 'on';
     charList.innerHTML = '';
     var model = charModel().filter(function (c) { return !isHidden(c.name); });
+    var visible = {};
+    model.forEach(function (c) { visible[c.name] = true; });
     var sel = prefs.enlargeMode === 'selected';
     if (sel && model.length) {
       var instr = document.createElement('p');
@@ -3297,7 +3326,7 @@ window.__bootSides__ = function (pdfjs) {
       }
       if (sel) top.addEventListener('click', function () { toggleEnlarge(c.name); });
       row.appendChild(top);
-      row.appendChild(swatchRow(c));
+      row.appendChild(swatchRow(c, visible));
       charList.appendChild(row);
     });
     if (!model.length) {
@@ -3312,13 +3341,9 @@ window.__bootSides__ = function (pdfjs) {
     var old = prefs.charColors[name];
     if (idx == null) delete prefs.charColors[name];
     else {
-      // one color per character: taking someone's color swaps yours back
-      for (var other in prefs.charColors) {
-        if (other !== name && prefs.charColors[other] === idx) {
-          if (old != null) prefs.charColors[other] = old;
-          else delete prefs.charColors[other];
-        }
-      }
+      // colors may be shared (v1.16.0, Peter's call): "me" in one color and
+      // everyone I talk to in another is a real way to read sides. The rail
+      // says who shares what; nothing is swapped or taken away.
       prefs.charColors[name] = idx;
       // Selected mode with nobody ticked: a color tap on a name is the tap a
       // reader means as "that's me"

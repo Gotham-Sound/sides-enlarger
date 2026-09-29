@@ -203,9 +203,15 @@ renderer re-segmenting enlarged lines). It also writes
   painted as a Multiply-blend fill in a content stream APPENDED after the page
   content (so white background fills inside forms can't hide it; glyphs stay
   crisp/selectable). Rect geometry uses the same uniform-anchor map at the
-  page's applied scale. Palette is 8 fixed pastels (luminance >= ~0.87 so
+  page's applied scale. Palette is 16 fixed pastels (luminance >= ~0.87 so
   grayscale printing keeps contrast); no free color picker. Dual-dialogue
-  blocks are never painted.
+  blocks are never painted. **Colors may be shared across characters
+  (v1.16.0, Peter's call):** picking a taken color no longer swaps it away
+  from the other name; the rail warns inline (a ring on the taken swatch
+  before the tap, a "Same color as …" note under each sharing name after),
+  never with a dialog. check.py groups rects by COLOR and treats every
+  sharing character's blocks as non-foreign; test.sh's shared-color case
+  (LAURA + MORROW) locks it.
 - **Recurses through form XObjects.** Real production sides put the page text inside
   `/Form` XObjects invoked via `Do`; the rewriter descends into them (accumulating
   CTM) and mutates the form stream. A form invoked more than once (shared across
