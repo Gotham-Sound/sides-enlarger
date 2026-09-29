@@ -930,26 +930,35 @@ def main():
         # (cue + parentheticals + dialogue), cover every word of them, and
         # never touch anyone else's text.
         if hl:
-            rects_by_name = {}
+            # colors may be SHARED across characters (v1.16.0): a rect of a
+            # color belongs to the group of characters assigned it, so the
+            # grouping is by color, and "foreign" means outside every member's
+            # blocks
+            groups = {}
+            for name, info in hl.items():
+                key = tuple(round(v, 3) for v in info["rgb"])
+                groups.setdefault(key, {"rgb": info["rgb"], "names": []})["names"].append(name)
+            rects_by_color = {}
             for d in a[pi].get_drawings():
                 f = d.get("fill")
                 if not f:
                     continue
-                for name, info in hl.items():
-                    rgb = info["rgb"]
+                for key, grp in groups.items():
+                    rgb = grp["rgb"]
                     if all(abs(f[j] - rgb[j]) < 0.02 for j in range(3)):
-                        rects_by_name.setdefault(name, []).append(d["rect"])
+                        rects_by_color.setdefault(key, []).append(d["rect"])
             # rotated watermark words (a full-page diagonal stamp crosses every
             # block) are not body text: never demand them inside a highlight
             arot_hl = rot_ids(a[pi])
             awords = [w for w in a[pi].get_text("words") if not_rotated(w, arot_hl)]
             wcut = marginStart
-            for name, info in hl.items():
-                myblocks = [B for B in blocks if B["name"] == name
+            for key, grp in groups.items():
+                label = "+".join(grp["names"])
+                myblocks = [B for B in blocks if B["name"] in grp["names"]
                             and any(l.get("cls") == "dialogue" for l in B["lines"])]
-                rects = rects_by_name.get(name, [])
+                rects = rects_by_color.get(key, [])
                 if len(rects) != len(myblocks):
-                    fails.append(f"p{pi+1}: highlight {name!r}: {len(myblocks)} blocks vs {len(rects)} rects")
+                    fails.append(f"p{pi+1}: highlight {label!r}: {len(myblocks)} blocks vs {len(rects)} rects")
                 mine = set()
                 for B in myblocks:
                     blk_lines = [B["cue"]] + B["lines"]
@@ -957,14 +966,14 @@ def main():
                     ys = [ymap(L) for L in blk_lines]
                     cover = next((r for r in rects if all(r.y0 <= yy <= r.y1 for yy in ys)), None)
                     if cover is None:
-                        fails.append(f"p{pi+1}: highlight {name!r}: block at y={ys[0]:.0f} has no covering rect")
+                        fails.append(f"p{pi+1}: highlight {label!r}: block at y={ys[0]:.0f} has no covering rect")
                         continue
                     for L in blk_lines:
                         ey = ymap(L)
                         for w in awords:
                             if abs(w[3] - ey) <= 5.0 and w[0] < wcut:
                                 if w[0] < cover.x0 - 1 or w[2] > cover.x1 + 1:
-                                    fails.append(f"p{pi+1}: highlight {name!r}: word {w[4]!r} "
+                                    fails.append(f"p{pi+1}: highlight {label!r}: word {w[4]!r} "
                                                  f"outside rect at y={ey:.0f}")
                 for r in rects:
                     for L in blines:
@@ -975,7 +984,7 @@ def main():
                             continue
                         fx0, fx1 = xspan(L)
                         if fx1 > r.x0 + 2 and fx0 < r.x1 - 2:
-                            fails.append(f"p{pi+1}: highlight {name!r} rect covers foreign line "
+                            fails.append(f"p{pi+1}: highlight {label!r} rect covers foreign line "
                                          f"{L['text'][:30]!r} at y={ey:.0f}")
 
     if len(gap_bad) > 2:

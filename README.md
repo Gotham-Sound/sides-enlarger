@@ -68,8 +68,10 @@ same-page-count rule:
 After a PDF loads, a **"Highlight characters"** panel lists every speaking
 character it found, biggest part first, with line counts. Tap a color next to a
 name to highlight that character's cue, parentheticals and dialogue; tap the
-empty circle to clear it. Highlight some, all or none. Two characters can't
-share a color (picking a taken color swaps it). The name-to-color choices are
+empty circle to clear it. Highlight some, all or none. Two characters can
+share a color (the panel says "Same color as …" under each of them, and a
+taken swatch shows a ring before you tap it), which is handy for you in one
+color and everyone you talk to in another. The name-to-color choices are
 remembered on your device for the run of the show, so your character stays
 yellow in every new sides packet.
 

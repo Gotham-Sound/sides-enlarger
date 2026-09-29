@@ -140,6 +140,26 @@ else
   fail=1
 fi
 
+echo "==> fixture: shared highlight color (LAURA + MORROW = yellow, MERC #1 = sky; v1.16.0)"
+outpdf="out/fixture.hlshare.pdf"
+node tools/run_engine_node.mjs out/fixture.pdf "$outpdf" 1.25 'LAURA=0;MORROW=0;MERC #1=2' \
+  >/dev/null 2>out/fixture.hlshare.err || { echo "    [shared color] ENGINE ERROR:"; cat out/fixture.hlshare.err; fail=1; }
+if CHECK_RENDER_DIR="$RENDER_DIR/fixture_hlshare" \
+     python3 tools/check.py out/fixture.pdf "$outpdf" "${outpdf}.report.json" \
+     | grep -q '^PASS' \
+   && python3 -c '
+import json, sys
+h = json.load(open("out/fixture.hlshare.pdf.report.json")).get("highlights", {})
+sys.exit(0 if h.get("LAURA", {}).get("palette") == 0 and h.get("MORROW", {}).get("palette") == 0 and h.get("MERC #1", {}).get("palette") == 2 else 1)
+'; then
+  echo "    [shared color] PASS"
+else
+  echo "    [shared color] FAIL"
+  CHECK_RENDER_DIR="$RENDER_DIR/fixture_hlshare" \
+    python3 tools/check.py out/fixture.pdf "$outpdf" "${outpdf}.report.json" | grep '  - ' || true
+  fail=1
+fi
+
 echo "==> palette: sixteen entries, unique keys and hexes, light enough to print gray (luma >= 0.87), none an even grey (spread > 0.05)"
 if node --input-type=module -e '
   import { createRequire } from "node:module";
