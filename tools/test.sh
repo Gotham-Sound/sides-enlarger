@@ -131,6 +131,25 @@ PY
 
 # Proves highlight rectangles land exactly on the chosen characters' lines,
 # cover every word of them, and touch nobody else's text.
+# analyze() is the same pipeline stopped early: its character list must match
+# a full run's exactly (WALLACE, who speaks only inside a grey omitted box,
+# must be absent from both), or a consumer that only asks who is on the page
+# (Sides Helper) would see names the PDF output never highlights.
+echo "==> fixture: analyze() parity with process()"
+node tools/run_engine_node.mjs out/fixture.pdf out/fixture.analyze.json --emit=analyze \
+  >/dev/null 2>out/fixture.analyze.err || { echo "    [analyze parity] ENGINE ERROR:"; cat out/fixture.analyze.err; fail=1; }
+python3 - <<'PY' && echo "    [analyze parity] PASS" || { echo "    [analyze parity] FAIL"; fail=1; }
+import json
+full = json.load(open("out/fixture.1.25.pdf.report.json"))
+an = json.load(open("out/fixture.analyze.json"))
+names = lambda r: sorted((c["name"], c["lines"]) for c in r.get("characters", []))
+assert names(an) == names(full), "analyze names differ: %r vs %r" % (names(an), names(full))
+assert "WALLACE" not in [n for n, _ in names(an)], "grey-boxed character leaked into analyze()"
+assert [p["dialogueLines"] for p in an["pages"]] == [p["dialogueLines"] for p in full["pages"]], "per-page dialogue counts differ"
+assert [p["page"] for p in an.get("nonScriptPages", [])] == [p["page"] for p in full.get("nonScriptPages", [])], "non-script rail differs"
+assert sorted(r["name"] for r in an.get("rejectedCues", [])) == sorted(r["name"] for r in full.get("rejectedCues", [])), "rejected rail differs"
+PY
+
 echo "==> fixture: highlights (LAURA=yellow, MERC #1=sky)"
 for scale in 1.0 1.25; do
   outpdf="out/fixture.hl.${scale}.pdf"
@@ -235,7 +254,10 @@ doc = fitz.open("out/fixture.reader.pdf")
 txt = "\n".join(doc[i].get_text() for i in range(doc.page_count))
 assert "Vans depart base camp" not in txt and "CALL SHEET" not in txt, "call-sheet text reflowed into reader output"
 rep = json.load(open("out/fixture.reader.pdf.report.json"))
-assert not any(b.endswith("PAGE 42") for b in rep.get("readerBreaks", [])), "reader marked the call-sheet page (34+8=42)"
+# break labels read 'SCRIPT PAGE 34 \u00b7 34. EPISODE ...': compare the part before the dot
+labels = [b.split("\u00b7")[0].strip() for b in rep.get("readerBreaks", [])]
+assert "SCRIPT PAGE 34" in labels, "reader break labels changed shape: %r" % labels[:3]
+assert "SCRIPT PAGE 42" not in labels, "reader marked the call-sheet page (34+8=42)"
 PY
 
 # watermarked side: a rotated per-recipient watermark drops a glyph onto minor
@@ -291,7 +313,7 @@ assert any("Watermark text matched" in x for x in w), "match warning missing: %r
 PY
 check_one out/fixture.pdf out/fixture.wmtext.pdf "wm-text: geometry parity" "$RENDER_DIR/fixture_wmtext"
 node tools/run_engine_node.mjs out/fixture.pdf out/fixture.wmmiss.pdf 1.25 --watermark-text='NOT ON ANY PAGE' \
-  >/dev/null 2>/dev/null
+  >/dev/null 2>out/fixture.wmmiss.err || { echo "    [wm-text: miss warns] ENGINE ERROR:"; cat out/fixture.wmmiss.err; fail=1; }
 python3 - <<'PY' && echo "    [wm-text: miss warns] PASS" || { echo "    [wm-text: miss warns] FAIL"; fail=1; }
 import json
 rep = json.load(open("out/fixture.wmmiss.pdf.report.json"))

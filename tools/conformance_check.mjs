@@ -104,16 +104,6 @@ if (fs.existsSync(hubPolicyFile)) {
   if (hp.policy_version !== manifest.policy_version) fail(`hub policy_version ${hp.policy_version} != manifest binding ${manifest.policy_version}`);
 } else console.log(`hub policy.json not found at ${hubPolicyFile} (byte-identity check skipped)`);
 if (vendored.policy_version !== manifest.policy_version) fail(`vendored policy_version ${vendored.policy_version} != manifest binding ${manifest.policy_version}`);
-// The policy must be plain data. A regular-expression object could not have
-// come out of JSON.parse, so this guards future code that might build the
-// policy some other way.
-const walk = (v, p) => {
-  if (v instanceof RegExp) fail(`policy has a RegExp at ${p}`);
-  else if (Array.isArray(v)) v.forEach((x, i) => walk(x, `${p}[${i}]`));
-  else if (v && typeof v === 'object') for (const k of Object.keys(v)) walk(v[k], `${p}.${k}`);
-};
-walk(vendored, 'policy');
-
 // a file's case count is the sum of its top-level arrays: `cases` alone for
 // most families, `cases` + `stats_cases` for script_page, the three named
 // blocks for burn_in
@@ -167,7 +157,6 @@ const run = (file, cases, fn, label) => {
   summary.push(`| \`vectors/${file}.json\` | ${ok} / ${cases.length} | ${label} | ${pass ? 'GREEN' : 'RED'} |`);
   console.log(`  ${file}.json: ${ok}/${cases.length} ${pass ? 'green' : 'RED'}`);
 };
-const expectOf = (c, key) => Object.assign({}, c, { expect: c[key] });
 // Each family maps to the engine function that mirrors the hub's reference
 // function of the same name.
 run('normalize', vectors.normalize && vectors.normalize.cases, c => pol.normCue(c.raw), 'norm_cue (seating)');

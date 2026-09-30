@@ -292,7 +292,7 @@
   </section>
 
   <!-- footer: the version stamp is filled in by the build -->
-  <footer>Sides Enlarger v1.16.0 &middot; Everything runs in your browser: no uploads, no accounts, no tracking.<br>
+  <footer>Sides Enlarger v1.16.1 &middot; Everything runs in your browser: no uploads, no accounts, no tracking.<br>
     <a href="https://github.com/Gotham-Sound/sides-enlarger/blob/main/README.md#run-it-offline-keep-your-own-copy" target="_blank" rel="noopener noreferrer">How to download this page and run it offline</a><br>
     <a href="https://github.com/Gotham-Sound/sides-enlarger/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">MIT License</a>
     &middot; free software, provided as is with no warranty &middot; &copy; 2026 Gotham Sound and Communications, Inc.</footer>
@@ -1352,7 +1352,7 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.22a","_comment":"The cross-l
   // Group tokens into instructions: every operator gets the operands that
   // came before it. "[ ... ]" arrays are kept as one raw operand, and an
   // inline image (BI) is marked so the caller can refuse to touch the stream.
-  function toInstructions(toks, src) {
+  function toInstructions(toks) {
     // group tokens into {operands:[tok], op} — arrays become one operand
     const out = [];
     let operands = [];
@@ -1693,7 +1693,7 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.22a","_comment":"The cross-l
       stats.warnings.push('stream contains inline images; left unscaled');
       return { out: null, changed: false, bail: true };
     }
-    const instrs = toInstructions(tokenize(src), src);
+    const instrs = toInstructions(tokenize(src));
     const out = [];
     const emitRaw = ins => { out.push(ins.operands.map(o => o.raw).join(' ') + (ins.operands.length ? ' ' : '') + ins.op); };
     const emit = s => out.push(s);
@@ -1843,7 +1843,6 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.22a","_comment":"The cross-l
           beginScaledIfDialogue();
           if (scaledRun) emit(ins.operands.map(o => o.raw).join(' ') + ' Tj');
           else { emit('T*'); emit(ins.operands.map(o => o.raw).join(' ') + ' Tj'); }
-          if (!scaledRun) break;
           break;
         }
         case '"': {
@@ -1863,7 +1862,7 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.22a","_comment":"The cross-l
         case 'Do': {
           const nameTok = ins.operands[0];
           if (onDo && nameTok && nameTok.raw[0] === '/') {
-            try { if (onDo(nameTok.raw.slice(1), ctm)) changedHere = changedHere || false; } catch (e) { stats.warnings.push('form xobject skipped: ' + (e && e.message || e)); }
+            try { onDo(nameTok.raw.slice(1), ctm); } catch (e) { stats.warnings.push('form xobject skipped: ' + (e && e.message || e)); }
           }
           emitRaw(ins); break;
         }
@@ -1986,7 +1985,7 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.22a","_comment":"The cross-l
     };
     for (const P of pages) {
       if (!P.lines.some(l => l.cls === 'dialogue')) continue;
-      const marginR0 = P.width - 80;
+      const marginR = P.width - 80; // right-margin cut: revision stars and page numbers live past it
       // mark where this original script page starts, so on-set page calls
       // can be found in reader view; reference the FULL header name, e.g.
       // 'SCRIPT PAGE 17 · NCIS: NY Ep. 101 "Pilot" Prod. Draft (Full Blue)'
@@ -2002,7 +2001,7 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.22a","_comment":"The cross-l
         // "RESU|RRECTION" would otherwise lose its head. Drop only rotated
         // watermarks and right-margin marks (revision stars) past the
         // page-number column.
-        headerText = textFromItems(hdr.items.filter(t => !t.rot && t.x < marginR0));
+        headerText = textFromItems(hdr.items.filter(t => !t.rot && t.x < marginR));
         // drop the trailing printed page number ("... 4/28/26  50.") — already
         // shown as "SCRIPT PAGE N". Glyph-per-op headers split it ("5 0."), so
         // tolerate spaces between the number's own characters and a bare dot.
@@ -2011,7 +2010,7 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.22a","_comment":"The cross-l
       }
       curPage = P.index; curLabel = num;
       push({ t: 'break', text: 'SCRIPT PAGE ' + num + (headerText ? ' · ' + headerText : ''), header: headerText });
-      const ML = 70, marginR = P.width - 80;
+      const ML = 70;
       // which speaker each cue/dialogue line belongs to (from the blocks the
       // classifier built), so every element can carry its character name
       const lineName = new Map();
@@ -2323,27 +2322,13 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.22a","_comment":"The cross-l
       return err;
     };
 
-    // Extraction-only pass: characters + per-page summary, no rewrite.
+    // Extraction-only pass: characters + per-page summary, no rewrite. It is
+    // the full pipeline stopped early (opts.analyzeOnly), never a second copy of
+    // it: a second copy once skipped the grey-region exclusion and could name
+    // characters that process() correctly left out.
     async function analyze(bytes) {
-      const { pages, totalChars } = await extract(bytes);
-      if (totalChars < 40) throw scannedError();
-      for (const P of pages) P.live = P.items;
-      const burn = stripRepeatedBurnIn(pages);
-      const gate = gateScriptPages(pages);
-      const cal = calibrate(pages.filter(P => !P.nonScript));
-      if (cal) for (const P of pages) {
-        if (P.nonScript) { P.blocks = []; P.dualNames = []; P.dualBlocks = []; continue; }
-        classifyPage(P, cal);
-      }
-      return {
-        calibration: cal,
-        policyVersion: POL.version,
-        nonScriptPages: gate.rail,
-        characters: cal ? collectCharacters(pages) : [],
-        rejectedCues: cal ? collectRejectedCues(pages) : [],
-        burnIns: burn.rail,
-        pages: pages.map(P => ({ page: P.index, dialogueLines: P.lines.filter(l => l.cls === 'dialogue').length, hasDual: !!P.hasDual })),
-      };
+      const { report } = await process(bytes, { analyzeOnly: true });
+      return report;
     }
 
     // Reader mode renderer: verbatim element text re-wrapped at the reader
@@ -2604,7 +2589,7 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.22a","_comment":"The cross-l
           let ctm = ctm0, fill = null; // fill: component array, or null = unknown/not-grey-able
           const stack = [];
           let rects = [];
-          for (const ins of toInstructions(tokenize(src), src)) {
+          for (const ins of toInstructions(tokenize(src))) {
             const nums = () => ins.operands.map(t => parseFloat(t.raw));
             if (ins.op === 'q') { stack.push({ ctm, fill }); continue; }
             if (ins.op === 'Q') { const s = stack.pop(); if (s) { ctm = s.ctm; fill = s.fill; } continue; }
@@ -2751,6 +2736,15 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.22a","_comment":"The cross-l
           + burn.rail.map(b => '“' + b.text + '”').join(', ') + '. The stamp itself is untouched in the output.');
       }
       const rotRuns = pages.reduce((n, P) => n + (P.rotatedItems || 0), 0);
+      // Extraction-only callers (analyze) stop here: everything that seats is
+      // known, and it came through the SAME prelude as a full run (decrypt,
+      // grey exclusion, burn-in strip, script-page gate), so the two can never
+      // disagree about who is on the page. Nothing is rewritten.
+      if (opts.analyzeOnly) {
+        if (rotRuns) report.warnings.push('Rotated watermark/burn-in text detected (' + rotRuns + ' run' + (rotRuns === 1 ? '' : 's') + ') and excluded from character detection.');
+        report.pages = pages.map(P => ({ page: P.index, dialogueLines: P.lines.filter(l => l.cls === 'dialogue').length, hasDual: !!P.hasDual }));
+        return { bytes: null, report };
+      }
       if (rotRuns) report.warnings.push('Rotated watermark/burn-in text detected (' + rotRuns + ' run' + (rotRuns === 1 ? '' : 's') + ') and excluded from character detection, so cues beneath it are still found.');
       // the character name grows with its block: a block's cue is eligible
       // whenever the block has eligible dialogue (a bare cue-shaped label
@@ -2857,7 +2851,7 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.22a","_comment":"The cross-l
             const fRes = fResRef ? ctx.lookup(fResRef) : outerRes;
             let ctm = ID, tm = null;
             const stack = [];
-            for (const ins of toInstructions(tokenize(src), src)) {
+            for (const ins of toInstructions(tokenize(src))) {
               const nums = () => ins.operands.map(t => parseFloat(t.raw));
               if (ins.op === 'q') { stack.push(ctm); continue; }
               if (ins.op === 'Q') { ctm = stack.pop() || ID; continue; }
@@ -2895,7 +2889,7 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.22a","_comment":"The cross-l
           if (src.indexOf('BI') !== -1 && /(^|[\s>\]])BI[\s\/]/.test(src)) return; // rewriteStream guards BI pages itself
           let ctm = ID, tm = null;
           const stack = [];
-          for (const ins of toInstructions(tokenize(src), src)) {
+          for (const ins of toInstructions(tokenize(src))) {
             const nums = () => ins.operands.map(t => parseFloat(t.raw));
             if (ins.op === 'q') { stack.push(ctm); continue; }
             if (ins.op === 'Q') { ctm = stack.pop() || ID; continue; }
@@ -3134,7 +3128,6 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.22a","_comment":"The cross-l
           let s = Math.max(1, Math.floor(Math.min(requested, sV, sGeo) * 100) / 100);
           if (pageSharedTextForm[i]) {
             s = 1;
-            pageReport.appliedScale = 1;
             if (requested > 1.001) pageReport.warnings.push('text on this page lives in a container shared with other pages — left unscaled for safety');
           }
           pageReport.appliedScale = s;
@@ -3327,7 +3320,11 @@ window.__bootSides__ = function (pdfjs) {
     // give the user control over the only thing stored on the device:
     // their name -> size/mode/colors map (script-derived, never transmitted)
     var forgetBtn = document.getElementById('forget');
-    if (localStorage.getItem(PREFS)) forgetBtn.hidden = false;
+    // storage can throw where a browser blocks site data (some private modes,
+    // Safari with site data off): the page must still start, just without prefs
+    var saved = false;
+    try { saved = !!localStorage.getItem(PREFS); } catch (e) {}
+    if (saved) forgetBtn.hidden = false;
     forgetBtn.addEventListener('click', function () {
       try { localStorage.removeItem(PREFS); } catch (e) {}
       location.reload();
@@ -3341,7 +3338,10 @@ window.__bootSides__ = function (pdfjs) {
   }
   function savePrefs(p) {
     if (!who) return;
-    try { localStorage.setItem(PREFS, JSON.stringify(p)); } catch (e) {}
+    try {
+      localStorage.setItem(PREFS, JSON.stringify(p));
+      document.getElementById('forget').hidden = false; // there is now something to forget
+    } catch (e) {}
   }
 
   // ---- elements ----
@@ -3368,7 +3368,7 @@ window.__bootSides__ = function (pdfjs) {
   var exportBtn = document.getElementById('exportBtn');
   var exportFullBtn = document.getElementById('exportFullBtn');
   // filled in by the build; it travels into exported .sceneline files
-  var APP_VERSION = '1.16.0';
+  var APP_VERSION = '1.16.1';
 
   // saved settings for this person. Every field gets a default here so the
   // rest of the code never has to check whether a key exists.
@@ -3376,7 +3376,7 @@ window.__bootSides__ = function (pdfjs) {
   if (prefs.scale >= 1 && prefs.scale <= 1.5) slider.value = prefs.scale;
   scaleVal.innerHTML = (+slider.value).toFixed(2) + '&times;';
   prefs.charColors = prefs.charColors || {};   // NAME -> palette index
-  prefs.hiddenChars = prefs.hiddenChars || []; // names unticked as junk
+  delete prefs.hiddenChars; // retired (v1.16.1): nothing could set it, but old saves may carry it and it silently hid names
   prefs.manualNames = prefs.manualNames || []; // names the user typed in
   prefs.enlargeMode = prefs.enlargeMode || 'all';   // all | selected | page
   prefs.enlargeChars = prefs.enlargeChars || {};    // NAME -> true (selected mode)
@@ -3395,9 +3395,8 @@ window.__bootSides__ = function (pdfjs) {
 
   // ---- character rail ----
   // railNorm: names are compared uppercase with single spaces, the way the
-  // engine reports them. isHidden: names the saved settings keep off the rail.
+  // engine reports them.
   function railNorm(n) { return String(n || '').toUpperCase().replace(/\s+/g, ' ').trim(); }
-  function isHidden(n) { return prefs.hiddenChars.indexOf(n) !== -1; }
 
   // the list of characters the rail shows, in display order
   function charModel() {
@@ -3490,7 +3489,7 @@ window.__bootSides__ = function (pdfjs) {
     if (!originalBytes) return;
     charRail.className = 'on';
     charList.innerHTML = '';
-    var model = charModel().filter(function (c) { return !isHidden(c.name); });
+    var model = charModel();
     var visible = {};
     model.forEach(function (c) { visible[c.name] = true; });
     var sel = prefs.enlargeMode === 'selected';
@@ -3571,7 +3570,6 @@ window.__bootSides__ = function (pdfjs) {
 
   // the user tapped a colour circle (or the 'none' circle) next to a name
   function assignColor(name, idx) {
-    var old = prefs.charColors[name];
     if (idx == null) delete prefs.charColors[name];
     else {
       // colors may be shared (v1.16.0, Peter's call): "me" in one color and
@@ -3589,7 +3587,7 @@ window.__bootSides__ = function (pdfjs) {
 
   // names ticked READING in Selected mode; the engine gets this list as enlargeOnly
   function tickedNames() {
-    return Object.keys(prefs.enlargeChars).filter(function (n) { return prefs.enlargeChars[n] && !isHidden(n); });
+    return Object.keys(prefs.enlargeChars).filter(function (n) { return prefs.enlargeChars[n]; });
   }
   // Seed (Selected mode): when nobody is ticked, whoever already has a
   // highlight color is who you're reading. Runs when Selected mode is entered
@@ -3600,7 +3598,7 @@ window.__bootSides__ = function (pdfjs) {
     if (tickedNames().length) return false;
     var seeded = false;
     for (var name in prefs.charColors) {
-      if (prefs.charColors[name] != null && !isHidden(name)) { prefs.enlargeChars[name] = true; seeded = true; }
+      if (prefs.charColors[name] != null) { prefs.enlargeChars[name] = true; seeded = true; }
     }
     if (seeded) savePrefs(prefs);
     return seeded;
@@ -3649,12 +3647,10 @@ window.__bootSides__ = function (pdfjs) {
     scheduleProcess();
   }
 
-  // 'Add a missed name': a typed name joins the rail (and comes back if it was hidden)
+  // 'Add a missed name': a typed name joins the rail
   chAddBtn.addEventListener('click', function () {
     var n = railNorm(chAddName.value);
     if (!n) return;
-    var i = prefs.hiddenChars.indexOf(n);
-    if (i !== -1) prefs.hiddenChars.splice(i, 1);
     if (prefs.manualNames.indexOf(n) === -1) prefs.manualNames.push(n);
     chAddName.value = '';
     savePrefs(prefs);
@@ -3666,7 +3662,7 @@ window.__bootSides__ = function (pdfjs) {
   function activeHighlights() {
     var hl = {};
     for (var name in prefs.charColors) {
-      if (!isHidden(name)) hl[name] = prefs.charColors[name];
+      hl[name] = prefs.charColors[name];
     }
     return hl;
   }
@@ -3767,7 +3763,6 @@ window.__bootSides__ = function (pdfjs) {
   function currentSidesCharacters() {
     var out = [];
     charModel().forEach(function (c) {
-      if (isHidden(c.name)) return;
       var pIdx = prefs.charColors[c.name];
       out.push({
         name: c.name,
@@ -3865,7 +3860,9 @@ window.__bootSides__ = function (pdfjs) {
     prevPg.disabled = curPage <= 1;
     nextPg.disabled = curPage >= numPages;
     var seq = ++renderSeq;
-    if (curPage <= docB.numPages) renderPage(docB, pvB, curPage, seq);
+    // the Original preview is hidden in Reader mode, so skip its render there
+    // (the mode switch re-runs the engine and lands back here, so it returns)
+    if (curPage <= docB.numPages && prefs.enlargeMode !== 'reader') renderPage(docB, pvB, curPage, seq);
     renderPage(docA, pvA, curPage, seq);
   }
   prevPg.addEventListener('click', function () { showPage(curPage - 1); });
@@ -3914,7 +3911,11 @@ window.__bootSides__ = function (pdfjs) {
     (report.pages || []).forEach(function (p) {
       (p.highlighted || []).forEach(function (n) { painted[n] = true; });
     });
-    var parts = names.filter(function (n) { return report.mode === 'reader' || painted[n]; })
+    // Reader mode has no per-page paint list; a saved colour for a name with
+    // no lines in this packet must not be announced as a highlight
+    var spoken = {};
+    (report.characters || []).forEach(function (c) { if (c.lines > 0) spoken[c.name] = true; });
+    var parts = names.filter(function (n) { return report.mode === 'reader' ? spoken[n] : painted[n]; })
       .map(function (n) { return n + ' (' + hl[n].key + ')'; });
     return parts.length ? ' Highlighted: ' + parts.join(', ') + '.' : '';
   }
