@@ -23,6 +23,16 @@ Asserts:
 The dialogue classifier here is an independent Python re-implementation of
 the geometric rules (x-band + follows-a-cue), so the engine is checked
 against a second opinion, not against itself.
+
+Vocabulary used throughout (for readers new to PDF work):
+  span      one run of text that the PDF library (pymupdf, imported as fitz)
+            reports as a single piece; a line is built from several spans
+  baseline  the invisible line the letters sit on; "y" below is that line's
+            height, measured from the top of the page in points
+  pt        a point, 1/72 of an inch; the unit for every position and size
+  cue       a character's name printed above their dialogue
+  block     a cue plus the parenthetical and dialogue lines under it
+  furniture headers, footers and page numbers that repeat on every page
 """
 import json
 import re
@@ -31,7 +41,9 @@ import sys
 
 import fitz
 
+# one line of screenplay text is 12pt tall (six lines per inch)
 LEAD = 12
+# how far (in points) a piece of text may drift before we call it "moved"
 TOL_POS = 0.7
 
 
@@ -127,6 +139,7 @@ def grey_boxes(page):
 
 
 def in_grey(px, py, boxes):
+    """is the point (px, py) inside any grey box (with 1pt of slack)?"""
     return any(b.x0 - 1 <= px <= b.x1 + 1 and b.y0 - 1 <= py <= b.y1 + 1 for b in boxes)
 
 
@@ -148,15 +161,21 @@ def rot_ids(page):
 
 
 def not_rotated(w, ids):
+    """a pymupdf word tuple's block/line index is not in the rotated set"""
     return (w[5], w[6]) not in ids
 
 
 def capsy(t):
+    """is the text all capitals (at least two letters)? Character names
+    and scene headings are set in capitals; dialogue is not."""
     letters = re.sub(r"[^A-Za-z]", "", t)
     return len(letters) >= 2 and letters == letters.upper()
 
 
 def is_cue(L, lo, hi, pageW=0):
+    """does this line look like a character cue? All capitals, short, one
+    piece of text starting inside the cue column [lo, hi], and not a scene
+    heading or a transition (CUT TO:) that happens to be capitals too."""
     # a cue may carry revision marks in the far-right margin ("TRACY  *")
     segs = [s for s in L["segs"] if s["x0"] < pageW - 80] if pageW else L["segs"]
     if len(segs) != 1 or (segs and L["segs"] and segs[0] is not L["segs"][0]):
@@ -178,6 +197,15 @@ import os as _os
 
 _POLICY = _json.load(open(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..",
                                         "policy", "scriptparse-policy.json"), encoding="utf-8"))
+# The pieces of the shared policy this file needs. They are data, not code:
+# changing a rule means changing the hub's policy file, never this script.
+#   _NON_CHARACTER    capitalised words that are never a name (CUT TO:, FADE IN)
+#   _BAD_WORDS        words that mark a multi-word cue as not a name (AND, FROM)
+#   _REJECT_TRAILING  a cue ending in one of these is not a name
+#   _NAME_SUFFIXES    the admitted ", JR" style tails
+#   _MARKER           the "#" in numbered parts like MERC #1
+#   _FURNITURE_CUE_RE  "ACT TWO", "SCENE 4": furniture set in capitals
+#   _PAGE_TOKEN_RE    what a printed page number looks like ("34.", "A12.")
 _NON_CHARACTER = frozenset(_POLICY["transitions_non_character"])
 _BAD_WORDS = frozenset(_POLICY["cue_stop_words"])
 _REJECT_TRAILING = tuple(_POLICY.get("cue_reject_trailing", ["-"]))
@@ -192,6 +220,8 @@ _PAGE_TOKEN_RE = re.compile(r"^[A-Z]?\d+[A-Z]?\.$")
 
 
 def _normalize_text(s):
+    """the hub's text clean-up: straighten quotes, drop [bracketed] and
+    (parenthetical) tags, collapse runs of spaces"""
     s = (s or "").strip()
     s = s.replace("\u201c", "").replace("\u201d", "").replace('"', "")
     s = s.replace("\u2019", "'").replace("\u2018", "'")
@@ -201,6 +231,9 @@ def _normalize_text(s):
 
 
 def _hub_norm_cue(raw):
+    """the hub's name normalisation: uppercase, no trailing period or colon,
+    repeated words collapsed ("SAM SAM" reads once). Every tool in the
+    federation seats names through this same function."""
     text = _normalize_text(raw).upper()
     text = re.sub(r"[.:]+$", "", text).strip()
     deduped = []
@@ -217,6 +250,8 @@ def norm_cue(t):
 
 
 def _strip_admitted_shapes(cue):
+    """remove the two tails a name may legitimately carry (", JR" and "#1")
+    so the character check below only sees the name proper"""
     m = _SUFFIX_TAIL_RE.search(cue)
     if m and m.group("suffix").replace(".", "") in _NAME_SUFFIXES:
         cue = cue[:m.start()].rstrip()
@@ -224,11 +259,16 @@ def _strip_admitted_shapes(cue):
 
 
 def cue_charset_ok(cue):
+    """a name is letters, digits, spaces, periods, apostrophes and hyphens;
+    anything else (a slash, an ampersand) means it is not one name"""
     rest = _strip_admitted_shapes(cue)
     return bool(rest) and bool(re.fullmatch(r"[A-Z0-9 .'\-]+", rest))
 
 
 def cue_semantic_ok(cue):
+    """the hub's meaning test for a name: not a transition or furniture, not
+    too short or too long, one to four words, no stop word in a multi-word
+    name ("ELEANOR FROM HR" is a description, not a character)"""
     if not cue or cue in _NON_CHARACTER or _FURNITURE_CUE_RE.match(cue):
         return False
     if cue.endswith(_REJECT_TRAILING):
@@ -246,11 +286,16 @@ def cue_semantic_ok(cue):
 
 
 def cue_gate_ok(cue):
+    """both tests together: this is what decides whether a cue becomes a
+    character on the list"""
     return bool(cue) and cue_semantic_ok(cue) and cue_charset_ok(cue)
 
 
 def split_dual_header(words):
-    """the hub's split_dual_header: words = [(text, x0, x1), ...] in x order"""
+    """the hub's split_dual_header: words = [(text, x0, x1), ...] in x order.
+    Dual dialogue prints two characters' names side by side on one row. This
+    returns (left name, right name, the x boundary between the columns) when
+    the row parts at exactly one wide gap into two valid names, else None."""
     min_gap = _POLICY.get("dual_dialogue", {}).get("min_gap_pt", 40)
     if len(words) < 2:
         return None
@@ -271,6 +316,8 @@ def split_dual_header(words):
 
 
 def _word_cell(w, page_height, grid):
+    """snap a word's bottom-left corner to a coarse grid (24pt squares by
+    default) so "the same place on every page" survives small drift"""
     return (_math.floor(w["x0"] / grid), _math.floor((page_height - w["bottom"]) / grid))
 
 
@@ -350,10 +397,13 @@ def burn_spans(doc):
     return out
 
 
+# burn_spans() walks every page, and several checks need its answer for the
+# same document, so it is computed once per open document
 _BURN_CACHE = {}
 
 
 def burn_spans_cached(doc):
+    """burn_spans(doc), computed once and remembered"""
     k = id(doc)
     if k not in _BURN_CACHE:
         _BURN_CACHE[k] = burn_spans(doc)
@@ -393,6 +443,10 @@ TYPE_TOL = 1 - _SIZE_RATIO  # the per-line tolerance, wired to the same ratio
 
 
 def page_is_script(n_lines, median_line_size, doc_median_lines, doc_median_size):
+    """the hub's page gate: a page whose typical text size is well below the
+    document's typical size (a call sheet in 6pt among 12pt script pages) is
+    not a script page. The optional line-count test is off unless the policy
+    turns it on. Empty pages, or a document with no size yet, pass."""
     if n_lines <= 0 or doc_median_size <= 0:
         return True
     if median_line_size < _SIZE_RATIO * doc_median_size:
@@ -405,6 +459,10 @@ def page_is_script(n_lines, median_line_size, doc_median_lines, doc_median_size)
 
 
 def script_page_stats(page_stats):
+    """the two document-wide numbers the gate compares against: the typical
+    line count of a script-sized page and the typical text size, from
+    [(line count, typical size)] per page. Fewer than two pages with text
+    gives (0, 0), which makes the gate stand down."""
     populated = [(n, ms) for n, ms in page_stats if n > 0]
     if len(populated) < 2:
         return (0.0, 0.0)
@@ -424,6 +482,11 @@ def non_script_pages(pages_lines):
 
 
 def classify_doc(doc):
+    """Label every line of every page as cue, dialogue, more, dual or other,
+    using only geometry. The columns are learned from the document itself
+    (the typical x of the cue lines, then of the dialogue under them) because
+    photocopied sides drift; nothing is hard-coded to an absolute position.
+    Returns the per-page line lists with a "cls" label on each line."""
     burn = burn_spans_cached(doc)
     pages_lines = [get_lines(p, burn[i]) for i, p in enumerate(doc)]
     widths = [p.rect.width for p in doc]
@@ -566,6 +629,9 @@ def reader_check(b, a, report, fails, notes):
     before_cls = classify_doc(b)
     mark_furniture(before_cls, [p.rect.height for p in b])
     burn_b = burn_spans_cached(b)
+    # need: every body word the reader output must still contain
+    # allb: every word on the source pages; a word in the output that is
+    #       not here was invented
     need = collections.Counter()
     allb = collections.Counter()
     for pi in range(len(b)):
@@ -611,6 +677,9 @@ def reader_check(b, a, report, fails, notes):
                         continue
                     counted.add(k)
                     need[w[4]] += 1
+    # got: the words in the reader output's reading area (the footer zone,
+    #      the bottom 45pt, is excluded); sizes: text sizes, to prove the
+    #      reader size was applied
     got = collections.Counter()
     sizes = []
     for pi in range(len(a)):
@@ -663,6 +732,9 @@ def reader_check(b, a, report, fails, notes):
 
 
 def main():
+    """Compare the original PDF (before) with the engine's output (after),
+    guided by the engine's own report of what it did, and print PASS or a
+    list of problems. Reader mode has its own contract and returns early."""
     before_path, after_path = sys.argv[1], sys.argv[2]
     report = json.load(open(sys.argv[3])) if len(sys.argv) > 3 else None
 
@@ -684,6 +756,8 @@ def main():
         fails.append(f"page count differs: {len(b)} vs {len(a)}")
         report_and_exit(fails, notes)
 
+    # which contract applies: "dialogue" (only dialogue grows), "page"
+    # (everything grows), or a list of selected characters
     mode = (report or {}).get("mode") or "dialogue"
     sel = (report or {}).get("enlargeOnly")  # None = all dialogue; list = only these
     try:
@@ -700,6 +774,8 @@ def main():
     hl = (report or {}).get("highlights") or {}
 
     def wordbag(page):
+        """how many times each word appears on the page, ignoring spaces;
+        comparing before and after proves no text was lost or added"""
         import collections
         c = collections.Counter()
         for w in page.get_text("words"):
@@ -721,6 +797,9 @@ def main():
         pageH = b[pi].rect.height
         marginStart = pageW - 80  # exclude right-margin revision marks (*)
         blocks = collect_blocks(blines)
+        # line_name: which character each dialogue line belongs to
+        # enl_cues: the cue lines that are allowed to grow (a name grows with
+        #           its block, but only when the block has dialogue that grows)
         line_name = {}
         enl_cues = set()
         for B in blocks:
@@ -732,6 +811,9 @@ def main():
                 enl_cues.add(id(B["cue"]))
 
         def line_enlarged(L):
+            """should this line have grown in the output? Dialogue yes (in
+            selective mode only for the chosen characters), its cue with it,
+            everything else no."""
             c = L.get("cls")
             if c == "cue":
                 return id(L) in enl_cues
@@ -741,6 +823,8 @@ def main():
                 return True
             return line_name.get(id(L)) in sel
 
+        # ymap: where a line's baseline must be in the output (it never moves)
+        # xspan: where its left and right edges must be after scaling
         if mode == "page":
             # whole-page mode: baselines never move; body x maps about the
             # page's content-center anchor
@@ -987,6 +1071,8 @@ def main():
                             fails.append(f"p{pi+1}: highlight {label!r} rect covers foreign line "
                                          f"{L['text'][:30]!r} at y={ey:.0f}")
 
+    # a couple of odd gaps can come from the renderer re-splitting words; more
+    # than two on a document means the spacing really is wrong
     if len(gap_bad) > 2:
         fails.append(f"kerning: {len(gap_bad)} word gaps deviate from uniform scaling")
         fails.extend("  " + g for g in gap_bad[:8])
@@ -1023,6 +1109,8 @@ def main():
 
 
 def report_and_exit(fails, notes):
+    """print the notes, then either PASS (exit 0) or the first 40 problems
+    (exit 1). test.sh looks for the word PASS at the start of a line."""
     for n in notes:
         print("NOTE:", n)
     if fails:

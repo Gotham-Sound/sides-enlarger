@@ -1,5 +1,21 @@
 /* Sides Enlarger core engine.
- * Runs in browser and Node. Dependencies injected: { pdfjsLib, PDFLib }.
+ * Runs in browser and Node. Dependencies injected: { pdfjsLib, PDFLib, policy }.
+ *
+ * How to read this file (top to bottom):
+ *  1. small math helpers and PDF matrix helpers
+ *  2. phase A: turn pdf.js text items into lines, calibrate the script's
+ *     column positions, classify each line (cue / dialogue / other)
+ *  3. the scriptparse policy interpreter (who counts as a character)
+ *  4. character extraction, the .sceneline file helpers, burn-in and
+ *     script-page gates
+ *  5. a tiny PDF content-stream tokenizer, and PDF decryption
+ *  6. phase B: the content-stream rewriter that enlarges dialogue
+ *  7. reader mode (reflow) and highlight painting
+ *  8. createSidesEngine(): the public API (extract / analyze / process)
+ * Vocabulary: a "cue" is the character name printed above a speech; a
+ * "block" is that cue plus its parentheticals and dialogue; a "slug" or
+ * slugline is a scene heading like INT. KITCHEN - DAY; "furniture" is
+ * repeated page decoration (headers, footers, page numbers).
  *
  * Pipeline:
  *  A) pdf.js text extraction -> per-document geometric calibration
@@ -16,24 +32,36 @@
   'use strict';
 
   // ---------- small stats helpers ----------
+  // Middle value of a list. Used instead of an average everywhere because
+  // photocopied sides drift page by page and a few odd pages must not pull
+  // the answer around.
   const median = a => {
     if (!a.length) return NaN;
     const s = [...a].sort((x, y) => x - y);
     const m = s.length >> 1;
     return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
   };
+  // The value q of the way up a sorted list (q = 0.9 means "bigger than 90%
+  // of the samples"). Used to pick a typical dialogue column width.
   const quantile = (a, q) => {
     if (!a.length) return NaN;
     const s = [...a].sort((x, y) => x - y);
     return s[Math.min(s.length - 1, Math.floor(q * s.length))];
   };
+  // Are two numbers within tol of each other? (positions in points)
   const near = (a, b, tol) => Math.abs(a - b) <= tol;
+  // Format a number for writing back into a PDF content stream: three
+  // decimals, and never "-0" (some viewers choke on it).
   const fmt = n => {
     const r = Math.round(n * 1000) / 1000;
     return Object.is(r, -0) ? '0' : String(r);
   };
 
   // ---------- matrices (PDF order: [a b c d e f]) ----------
+  // A PDF transformation matrix is six numbers [a b c d e f] describing
+  // scale, rotation and shift. mul(m, n) composes two of them ("do m, then
+  // n"), and apply() maps a point (x, y) through one. These are what let
+  // us follow text that lives inside nested drawing containers.
   const mul = (m, n) => [
     m[0] * n[0] + m[1] * n[2], m[0] * n[1] + m[1] * n[3],
     m[2] * n[0] + m[3] * n[2], m[2] * n[1] + m[3] * n[3],
@@ -42,8 +70,15 @@
   const apply = (m, x, y) => [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]];
 
   // ---------- phase A: extraction + classification ----------
+  // All positions in this file are PDF points (1/72 inch), measured from
+  // the bottom-left corner of the page, the way PDF itself does.
   const LEAD = 12, EDGE = 14; // pts: nominal leading, min page margin kept
 
+  // pdf.js hands us loose text items (a word, sometimes a single letter,
+  // with an x/y position and size). This groups them into visual lines by
+  // shared baseline, then splits each line into "segments" wherever there
+  // is a wide horizontal gap. A line then knows its text, its left/right
+  // edges and its segments; the classifier works on these lines.
   function buildLines(items) {
     // cluster text items into visual lines by baseline y
     const sorted = [...items].sort((p, q) => q.y - p.y || p.x - q.x);
@@ -117,6 +152,8 @@
     return texts;
   }
 
+  // Is this text ALL CAPS (ignoring digits and punctuation)? Character
+  // cues and scene headings are printed in capitals.
   const capsy = t => {
     const letters = (t || '').replace(/[^A-Za-z]/g, '');
     return letters.length >= 2 && letters === letters.toUpperCase();
@@ -124,6 +161,10 @@
   // A cue may carry revision marks in the far-right margin ("TRACY  *"):
   // those margin segments must not disqualify it. pageW=0 keeps the strict
   // single-segment rule (calibration's first pass has no page context).
+  // Does this line look like a character cue? It must be a single short
+  // all-caps segment that starts inside the cue column (band = [minX, maxX])
+  // and is not a scene heading or a transition like CUT TO. This is a
+  // geometric test on purpose: we never decide by reading the words.
   const isCueLine = (L, band, pageW) => {
     const segs = pageW
       ? L.segments.filter(sg => sg.x0 < pageW - 80)
@@ -149,6 +190,11 @@
     return 1 - r;
   };
 
+  // Learn this document's layout: where the cue column, the dialogue column
+  // and the parenthetical column sit (x positions), and the body type size.
+  // Nothing is hard-coded because sides are photocopies with drifting
+  // margins; everything is a median over the whole document. Returns null
+  // when the document has too few cue-shaped lines to calibrate on.
   function calibrate(pages) {
     const CUE_BAND = [200, 340]; // 2.8"–4.7" initial guess, then refined
     const cueXs = [];
@@ -198,12 +244,17 @@
     if (!policy || typeof policy !== 'object' || typeof policy.policy_version !== 'string') {
       throw new Error('createSidesEngine: the scriptparse policy.json object is required ({ pdfjsLib, PDFLib, policy })');
     }
+    // Small string helpers for the rules below. canonTag makes a
+    // parenthetical tag like "(V.O.)" comparable ("VO"); cpLen counts
+    // characters the way the Python reference does (by code point).
     const esc = x => String(x).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const canonTag = t => String(t).replace(/\./g, '').replace(/\s+/g, ' ').trim().toUpperCase();
     const upperNorm = x => String(x || '').trim().replace(/\s+/g, ' ').toUpperCase();
     const stripTrailingPunct = x => x.replace(/[.:]+$/, '').trim();
     const cpLen = x => Array.from(x).length;
     const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+    // The policy file's lists, turned into fast lookups. Nothing below is
+    // decided here: every list comes from policy.json.
     const standard = new Set((policy.standard_tags || []).map(canonTag));
     const channelTags = new Set((policy.channel_tags || []).map(canonTag));
     const possessive = new Set(policy.possessive_channel_nouns || []);
@@ -222,6 +273,9 @@
       ? new RegExp('^(?:' + numWords.map(esc).join('|') + ')\\s+(?:' + (marker ? esc(marker) + '?' : '') + '\\d+[A-Z]?'
         + (numberWords.length ? '|' + numberWords.map(esc).join('|') : '') + ')$')
       : /(?!)/;
+    // Patterns used by the rules: a trailing "(TAG)", a possessive channel
+    // like "SAM'S VOICE", a name suffix like ", JR", and a printed page
+    // number token like "34.".
     const TRAILING_PAREN = /\s*\(([^()]*)\)\s*$/;
     const POSSESSIVE = /^(.+?)['’]S\s+([A-Z]+)$/;
     const SUFFIX_TAIL = /,\s*([A-Z][A-Z.]*)$/;
@@ -244,6 +298,9 @@
 
     // fold / part_of / parts / fold_candidates: the DERIVATION layer (raw
     // occurrence strings in; trailing [.:] canonicalized like seating, #79)
+    // fold(): is this printed cue a variant of a simpler name? "SAM (V.O.)"
+    // folds to base SAM with channel VO; "SAM (CONT'D)" folds to SAM as a
+    // standard continuation. An unrecognized tag means "not a variant".
     const ident = name => ({ base: name, channel: null, tier: null, kind: null });
     const kindOf = ch => (kinds.has(canonTag(ch)) ? kinds.get(canonTag(ch)) : kindDefault);
     const fold = printed => {
@@ -267,12 +324,17 @@
       if (sawStandard && base !== name) return { base, channel: null, tier: 'standard', kind: null };
       return ident(name);
     };
+    // partOf(): which part (character) does this cue belong to? An explicit
+    // alias wins; otherwise the folded base name; otherwise the cue itself.
     const partOf = (cue, aliases) => {
       const name = stripTrailingPunct(upperNorm(cue));
       if (aliases && hasOwn(aliases, name) && aliases[name]) return upperNorm(aliases[name]);
       const f = fold(name);
       return (f.tier === 'standard' || f.tier === 'channel') ? f.base : name;
     };
+    // foldCandidates(): given a list of names, suggest which channel
+    // variants could merge into a base name (offered to a person, never
+    // applied automatically).
     const foldCandidates = names => {
       const out = [];
       for (const n of (names || [])) {
@@ -281,6 +343,9 @@
       }
       return out;
     };
+    // parts(): group every cue occurrence in a parsed script by part, with
+    // where it was seen. Used by other benches; kept here so the interpreter
+    // matches the reference completely.
     const nv = v => (v === undefined ? null : v);
     const parts = (parse, aliases) => {
       const map = {};
@@ -299,6 +364,9 @@
 
     // the cue GATE: semantic (stop words, furniture, trailing glyphs, size)
     // and charset (strict class after the two ruled trailing admissions)
+    // Two name shapes are admitted before the strict character check:
+    // a numbered part ("MERC #1") and a generational suffix ("SALLY, JR").
+    // stripAdmitted removes them so the rest can be checked plainly.
     const stripAdmitted = cue => {
       let c = cue;
       const m = SUFFIX_TAIL.exec(c);
@@ -361,6 +429,11 @@
     // burn-in signal 2 arithmetic (issue #16): words carry {text, x0, x1,
     // bottom, top} in top-left extractor space; the cell flips to spec 3.5
     // anchor space here, at the boundary, with floor as the pinned quantizer
+    // A "burn-in" is text stamped onto every page (a recipient's name or a
+    // security notice). If the same word sits in the same grid cell on
+    // enough pages, it is a stamp, not script. wordCell() snaps a word to a
+    // grid cell; repeatThreshold() says how many pages count as "enough";
+    // detectRepeatedBurnin() returns, per page, which words to drop.
     const burn = policy.burn_in || {};
     const grid = burn.repeat_grid_pt != null ? burn.repeat_grid_pt : 24;
     const wordCell = (w, pageHeight, g) => { const G = g || grid; return [Math.floor(w.x0 / G), Math.floor((pageHeight - w.bottom) / G)]; };
@@ -676,6 +749,8 @@
     return { settings: { scale: (state && state.scale) || null, mode: (state && state.mode) || null }, characters };
   }
 
+  // A "lean" copy of a show block: same scenes without the screenplay text
+  // fields, so an exported file carries no script content.
   function leanShow(show) {
     const scenes = ((show && show.scenes) || []).map(sc => {
       const c = {}; for (const k of Object.keys(sc)) if (k !== 'dialogue_text' && k !== 'action_text') c[k] = sc[k]; return c;
@@ -844,6 +919,8 @@
   // continuation *, etc.) which sit far right and must never be scaled or
   // counted toward the fit calculation. If such marks exist on the line,
   // record where they start so enlargement never grows into them.
+  // Record the left/right edges of the line's real text (dx0/dx1), leaving
+  // out anything in the far-right margin.
   function setDialExtent(L, pageW) {
     const marginStart = pageW - 80; // ~1.1" from right edge
     const segs = L.segments.filter(s => s.x0 < marginStart);
@@ -855,6 +932,8 @@
     } else { L.dx0 = L.x0; L.dx1 = L.x1; }
   }
 
+  // How much can this page's dialogue grow (up to the requested factor)
+  // before some line would run off the page or into a margin mark?
   function pageScale(P, requested, colW, dialX) {
     // Every dialogue run is scaled uniformly about the column-center anchor
     // C = dialX + colW/2 (x' = C + s*(x - C)), so letter pitch, word gaps and
@@ -879,6 +958,13 @@
   }
 
   // ---------- content stream lexer ----------
+  // A PDF page is drawn by a "content stream": a plain-text list of
+  // operands followed by an operator, like "1 0 0 1 72 700 Tm (Hello) Tj".
+  // The rewriter needs to read that list, change a few text-positioning
+  // operators, and write everything else back exactly as it was. These
+  // two functions are the minimal reader for that: tokenize() splits the
+  // text into tokens, toInstructions() groups tokens into operator calls.
+  // WS = whitespace bytes, DELIM = characters that end a token.
   const WS = new Set([0x00, 0x09, 0x0a, 0x0c, 0x0d, 0x20]);
   const DELIM = new Set(['(', ')', '<', '>', '[', ']', '{', '}', '/', '%']);
 
@@ -938,6 +1024,9 @@
     return toks;
   }
 
+  // Group tokens into instructions: every operator gets the operands that
+  // came before it. "[ ... ]" arrays are kept as one raw operand, and an
+  // inline image (BI) is marked so the caller can refuse to touch the stream.
   function toInstructions(toks, src) {
     // group tokens into {operands:[tok], op} — arrays become one operand
     const out = [];
@@ -973,6 +1062,8 @@
   // Production sides are routinely permission-locked (RC4-128 / AES-128 with an
   // empty user password). pdf.js decrypts transparently for reading; for the
   // rewrite we decrypt every stream & string in place, then drop /Encrypt.
+  // The fixed 32-byte padding string from the PDF specification, used when
+  // deriving the encryption key from an (empty) user password.
   const PAD = [
     0x28, 0xBF, 0x4E, 0x5E, 0x4E, 0x75, 0x8A, 0x41, 0x64, 0x00, 0x4E, 0x56, 0xFF, 0xFA, 0x01, 0x08,
     0x2E, 0x2E, 0x00, 0xB6, 0xD0, 0x68, 0x3E, 0x80, 0x2F, 0x0C, 0xA9, 0xFE, 0x64, 0x53, 0x69, 0x7A,
@@ -1021,6 +1112,8 @@
     return out;
   }
 
+  // RC4 stream cipher (decrypting is the same operation as encrypting).
+  // Older locked PDFs use it; small enough to carry in pure JavaScript.
   function rc4(key, data) {
     const S = new Uint8Array(256);
     for (let i = 0; i < 256; i++) S[i] = i;
@@ -1040,6 +1133,9 @@
     return out;
   }
 
+  // AES-128 in CBC mode via the browser's built-in crypto (the first 16
+  // bytes of the data are the IV, the random starting block). Only
+  // available on https or file URLs, which is why the message says so.
   async function aesCbcDecrypt(key, data) {
     if (data.length < 16) return new Uint8Array(0);
     const subtle = (typeof crypto !== 'undefined' && crypto.subtle) || null;
@@ -1056,6 +1152,10 @@
     }
   }
 
+  // Read the PDF's /Encrypt dictionary and build a decryptor for it: which
+  // method streams and strings use, and the per-object key derivation
+  // (PDF spec algorithm 2 for the file key, then algorithm 1 per object).
+  // Returns null when the file is not encrypted.
   function buildDecryptor(PDFLib, ctx) {
     const encRef = ctx.trailerInfo.Encrypt;
     if (!encRef) return null;
@@ -1170,6 +1270,7 @@
     }
   }
 
+  // Join several byte arrays into one.
   function concatBytes(list) {
     let n = 0;
     for (const b of list) n += b.length;
@@ -1179,6 +1280,9 @@
     return out;
   }
 
+  // Walk every object in the PDF and decrypt its streams and strings in
+  // place, then remove /Encrypt so the saved output is an ordinary
+  // unlocked PDF. Returns true when the file was encrypted.
   async function decryptInPlace(PDFLib, pdfDoc) {
     const ctx = pdfDoc.context;
     const dec = buildDecryptor(PDFLib, ctx);
@@ -1212,6 +1316,8 @@
     return true;
   }
 
+  // Recursively find every string inside a dictionary or array and replace
+  // it with fn(bytes). `seen` stops us visiting a shared object twice.
   async function visitStrings(PDFLib, obj, fn, seen) {
     if (!obj || typeof obj !== 'object') return;
     if (seen.has(obj)) return;
@@ -1234,6 +1340,8 @@
     }
   }
 
+  // If v is a PDF string, return its decrypted replacement (as a hex
+  // string, which is safe for any bytes); otherwise null.
   async function replaceString(PDFLib, v, fn) {
     if (v instanceof PDFLib.PDFString || v instanceof PDFLib.PDFHexString) {
       const plain = await fn(v.asBytes());
@@ -1265,6 +1373,11 @@
     const emitRaw = ins => { out.push(ins.operands.map(o => o.raw).join(' ') + (ins.operands.length ? ' ' : '') + ins.op); };
     const emit = s => out.push(s);
 
+    // Graphics state we track while walking the stream: the CTM (the
+    // current transformation matrix, the running position/scale every
+    // drawing command passes through), a stack for q/Q save/restore, and
+    // the text matrices (tm = where the next glyph goes, tlm = the start
+    // of the current text line, tl = the line spacing for T* moves).
     let ctm = ctm0 ? ctm0.slice() : [1, 0, 0, 1, 0, 0];
     const gsStack = [];
     let tm = null, tlm = null, tl = 0;
@@ -1285,11 +1398,16 @@
       pathRects = []; pathOther = false;
     };
 
+    // If we injected a scaled text matrix for the current run, put the
+    // original one back before any operator that assumes it.
     const restoreIfScaled = () => {
       if (scaledRun) { emit(tlm.map(fmt).join(' ') + ' Tm'); scaledRun = false; }
     };
     const num = (ins, idx) => (ins.operands[idx] && ins.operands[idx].val) || 0;
 
+    // Which classified line (if any) is the text about to be drawn at? We
+    // compute the device position of the current text line start and look
+    // for a line with the same baseline whose horizontal span contains it.
     const classifyShow = () => {
       if (!tlm) return null;
       const dev = apply(mul(tlm, ctm), 0, 0);
@@ -1300,6 +1418,9 @@
       }
       return null;
     };
+    // Called just before a text-show operator. If the text belongs to a
+    // line we want to enlarge, emit a replacement Tm that scales it about
+    // the page's shared anchor and remember that we did.
     const beginScaledIfDialogue = () => {
       if (scaledRun) return; // continuing same run: advances already scaled
       const hit = classifyShow();
@@ -1325,6 +1446,9 @@
       stats.scaledOps++;
     };
 
+    // The main walk. Each case tracks state and then re-emits the original
+    // instruction unchanged (emitRaw). Only the text-show operators can
+    // cause anything new to be written.
     for (const ins of instrs) {
       switch (ins.op) {
         case 'q': gsStack.push([ctm, clipLo, clipHi, clipUnknown]); emitRaw(ins); break;
@@ -1338,6 +1462,8 @@
           const m = [0, 1, 2, 3, 4, 5].map(i => num(ins, i));
           ctm = mul(m, ctm); emitRaw(ins); break;
         }
+        // Path construction: remember rectangles so a following W (clip)
+        // can be measured; any non-rectangle path makes the clip "unknown".
         case 're': {
           const x = num(ins, 0), y = num(ins, 1), w = num(ins, 2), h = num(ins, 3);
           const pts = [apply(ctm, x, y), apply(ctm, x + w, y), apply(ctm, x, y + h), apply(ctm, x + w, y + h)];
@@ -1351,6 +1477,8 @@
         case 'n': case 'f': case 'F': case 'f*': case 'S': case 's':
         case 'B': case 'B*': case 'b': case 'b*':
           applyPendingClip(); emitRaw(ins); break;
+        // Text object and positioning operators: keep our copy of the text
+        // matrices in step with what the PDF viewer will compute.
         case 'BT': tm = [1, 0, 0, 1, 0, 0]; tlm = tm.slice(); scaledRun = false; emitRaw(ins); break;
         case 'ET': restoreIfScaled(); tm = tlm = null; emitRaw(ins); break;
         case 'TL': tl = num(ins, 0); emitRaw(ins); break;
@@ -1379,6 +1507,9 @@
           beginScaledIfDialogue();
           emitRaw(ins); break;
         }
+        // ' and " are shorthand operators (move to next line AND show text).
+        // We spell them out as separate moves and a plain Tj so the scaled
+        // matrix can be inserted between the move and the show.
         case "'": {
           restoreIfScaled();
           tlm = mul([1, 0, 0, 1, 0, -tl], tlm || [1, 0, 0, 1, 0, 0]);
@@ -1401,6 +1532,9 @@
           else { emit('T*'); emit(strTok + ' Tj'); }
           break;
         }
+        // Do draws a named XObject (a form: a reusable chunk of page content,
+        // or an image). The caller's onDo descends into forms so text inside
+        // them can be enlarged too.
         case 'Do': {
           const nameTok = ins.operands[0];
           if (onDo && nameTok && nameTok.raw[0] === '/') {
@@ -1484,6 +1618,8 @@
       el.scene = curScene.id; el.heading = curScene.heading;
       els.push(el);
     };
+    // Join a line's items back into readable text, inserting spaces only
+    // across real word gaps.
     const textFromItems = items => {
       // content order, not x order: kerned per-glyph text can overlap
       // slightly and x-sorting would scramble the reading order
@@ -1551,11 +1687,16 @@
       curPage = P.index; curLabel = num;
       push({ t: 'break', text: 'SCRIPT PAGE ' + num + (headerText ? ' · ' + headerText : ''), header: headerText });
       const ML = 70, marginR = P.width - 80;
+      // which speaker each cue/dialogue line belongs to (from the blocks the
+      // classifier built), so every element can carry its character name
       const lineName = new Map();
       for (const B of (P.blocks || [])) {
         lineName.set(B.cue, B.name);
         for (const l of B.lines) lineName.set(l, B.name);
       }
+      // Paragraph assembly: consecutive lines of the same kind (action, or
+      // dialogue by the same speaker) are joined into one element so the
+      // renderer can re-wrap them; flush* push what has been gathered.
       let para = null, paren = null, dual = null, prevY = null;
       const flushPara = () => {
         if (para) { push(para); para = null; }
@@ -1710,6 +1851,8 @@
     { key: 'tan',        hex: '#EEDCBE', rgb: [0.933, 0.863, 0.745] },
   ];
 
+  // PDF path commands for a rectangle with rounded corners (the 0.5523
+  // factor makes a Bezier curve approximate a quarter circle).
   function roundedRectPath(x, y, w, h, r) {
     r = Math.min(r, w / 2, h / 2);
     const k = 0.5523 * r;
@@ -1763,9 +1906,17 @@
   }
 
   // ---------- public API ----------
+  // The factory the page and the Node tools call once. pdf.js is used only
+  // to READ text positions; pdf-lib is used to WRITE the modified PDF; the
+  // policy is the shared scriptparse rules. Everything above this line is
+  // pure and testable; everything below closes over the injected libraries.
   return function createSidesEngine({ pdfjsLib, PDFLib, policy }) {
     POL = compilePolicy(policy);
 
+    // Read every page's text items with pdf.js. Each item becomes
+    // { str, x, y, w, size, rot, ang, seq }: its text, position, width,
+    // type size, whether it is rotated (a watermark), its angle, and its
+    // order in the content stream. Returns the pages with lines built.
     async function extract(bytes) {
       // pdf.js 4.2+/5.x iterates its text-content ReadableStream with `for await`.
       // WebKit only shipped ReadableStream async iteration in Safari 26, so every
@@ -1840,6 +1991,7 @@
       return { pages, totalChars };
     }
 
+    // A scan has no text layer, so there is nothing to measure or enlarge.
     const scannedError = () => {
       const err = new Error('No extractable text found — this looks like a scanned PDF. Sides Enlarger v1 needs a text-based PDF (ask production for the original export).');
       err.code = 'SCANNED';
@@ -1883,6 +2035,9 @@
       const size = Math.round(12 * requested * 10) / 10;
       const lh = Math.round(size * 1.42 * 10) / 10;
       const colW = W - 2 * MX;
+      // Layout constants for the reader page (US Letter, generous margins),
+      // and helpers: sanitize() replaces characters the standard fonts
+      // cannot draw; wrap() breaks text into lines that fit a width.
       const sanitize = t =>
         t.replace(/[­‐‑‒]/g, '-').replace(/[^\x20-\x7E -ÿ–—‘’“”…]/g, '?');
       const wrap = (text, font, sz, width) => {
@@ -1898,6 +2053,8 @@
       };
       let page = null, y = 0, readerPage = 0;
       const gray = PDFLib.rgb(0.45, 0.45, 0.45);
+      // Start a new reader page with its footer (the parity note, the reader
+      // page number and the recipient's stamp).
       const newPage = () => {
         readerPage++;
         page = doc.addPage([W, H]);
@@ -1923,6 +2080,8 @@
         else pg.drawText(stampText, { x: Math.max(MX, (W - sw) / 2), y: 42, size: sz, font: F, color: dark });
       };
       newPage();
+      // ensure(): start a new page if h points would not fit. drawLines():
+      // draw wrapped lines, optionally with a highlight strip behind them.
       const ensure = h => { if (y - h < BOT) newPage(); };
       const drawLines = (lines, font, sz, opts2) => {
         for (const ln of lines) {
@@ -2008,6 +2167,11 @@
       return doc.save({ useObjectStreams: false });
     }
 
+    // The main entry point: bytes of a sides PDF in, enlarged PDF out.
+    // Steps: read text (extract) -> drop omitted grey regions and burn-in
+    // stamps -> gate non-script pages -> calibrate and classify -> either
+    // reflow (reader mode) or rewrite each page's content stream in place,
+    // then paint highlights. Every decision lands in the returned report.
     async function process(bytes, opts = {}) {
       const requested = Math.min(1.5, Math.max(1.0, opts.scale || 1.25));
       const { pages, totalChars } = await extract(bytes);
@@ -2047,6 +2211,12 @@
       const pdfPages = pdfDoc.getPages();
       if (pdfPages.length !== pages.length) throw new Error('internal: page count mismatch between parsers');
 
+      // pdf-lib helpers: N() makes a PDF name like /Contents; latinOf and
+      // bytesOfLatin convert between bytes and a one-char-per-byte string
+      // (content streams are handled as such strings); decodeStream()
+      // un-compresses a stream; matrixOf() reads a form's /Matrix;
+      // pageStreamsLatin() gathers a page's content (possibly several
+      // streams); pageResourcesOf() finds where its named resources live.
       const N = PDFLib.PDFName.of.bind(PDFLib.PDFName);
       const latinOf = u8 => { let s = ''; for (let b = 0; b < u8.length; b++) s += String.fromCharCode(u8[b]); return s; };
       const bytesOfLatin = str => { const a = new Uint8Array(str.length); for (let b = 0; b < str.length; b++) a[b] = str.charCodeAt(b) & 0xff; return a; };
@@ -2100,6 +2270,9 @@
           const fResRef = form.dict.get(N('Resources'));
           return { form, res: fResRef ? ctx.lookup(fResRef) : resources };
         };
+        // Walk one content stream tracking the fill colour and any pending
+        // rectangles; when a grey fill is painted, record the rectangles in
+        // page space. Descends into forms up to a small depth.
         const walk = (src, resources, ctm0, out, depth) => {
           if (depth > 4) return;
           if (src.indexOf('BI') !== -1 && /(^|[\s>\]])BI[\s\/]/.test(src)) return;
@@ -2150,6 +2323,8 @@
         return perPage;
       };
 
+      // Apply the grey exclusion: drop every item whose centre sits inside a
+      // grey rectangle and rebuild that page's lines without it.
       for (const P of pages) P.live = P.items; // the items line-building currently sees
       let greyPages = 0, greyRuns = 0;
       try {
@@ -2469,6 +2644,10 @@
       };
 
       // ---- highlight painting plumbing (shared ExtGState, appended stream) ----
+      // Highlights are painted with a Multiply blend so the pastel shows the
+      // black text through it. That needs a shared graphics-state object
+      // (ensureHlGs adds it to the page's resources) and a new content
+      // stream appended after the page's own (paintHighlights).
       let hlGsRef = null;
       const HL_GS = N('GSsidesHL');
       const ensureHlGs = page => {
@@ -2685,6 +2864,9 @@
         return { bytes: outBytes, report };
       }
 
+      // Dialogue mode (the default and the Selected-characters variant): for
+      // each page, work out the largest scale that fits, rewrite the content
+      // stream so only dialogue blocks grow, then paint highlights.
       for (let i = 0; i < pdfPages.length; i++) {
         const P = pages[i];
         const page = pdfPages[i];

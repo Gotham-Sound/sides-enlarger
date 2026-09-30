@@ -1,6 +1,12 @@
 // Unit test for engine.rewriteSidesLink (the Netflix sides-link rewrite).
 // No real token anywhere: the shapes below are made up.
 //   node tools/test_links.mjs
+//
+// What it checks: the page can turn a Netflix "pdfView" sides link into the
+// direct file link, and it must leave every other kind of input alone
+// (other hosts, other paths, a missing or unsafe token). It is a pure string
+// rewrite: the page never fetches anything (see the CSP note in CLAUDE.md).
+// Exit code 1 means at least one case failed.
 import { createRequire } from 'module';
 import fs from 'fs';
 import path from 'path';
@@ -8,9 +14,14 @@ import { fileURLToPath } from 'url';
 const require = createRequire(import.meta.url);
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const policy = JSON.parse(fs.readFileSync(path.join(root, 'policy/scriptparse-policy.json'), 'utf8'));
+// The rewrite needs no PDF libraries, so empty stand-ins are enough to build
+// the engine here.
 const engine = require(path.join(root, 'engine.js'))({ pdfjsLib: {}, PDFLib: {}, policy });
 const rw = engine.rewriteSidesLink;
+// A made-up token in the shape a real one has. Never put a real token here.
 const T = 'AbC123-xyz_789';
+// Each case: a label, the input, and the expected output. null means "leave
+// it untouched" (the page then shows no link).
 const cases = [
   ['pdfView link rewrites to the file link', 'https://linkshare.netflixstudios.com/pdfView?file=' + T, 'https://linkshare.netflixstudios.com/file?fileId=' + T],
   ['already a file link stays a file link', 'https://linkshare.netflixstudios.com/file?fileId=' + T, 'https://linkshare.netflixstudios.com/file?fileId=' + T],

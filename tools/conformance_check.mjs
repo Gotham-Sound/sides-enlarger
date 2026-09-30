@@ -20,6 +20,16 @@
 //     builds no scene inventory) and is reported as n/a, not mirrored.
 // The manifest's own sha256 (printed raw and CR-stripped, per the
 // constitution's Windows note) is the ack number.
+//
+// In plain terms: the hub publishes a folder of test cases ("vectors": an
+// input and the answer the shared rules require). This script proves that
+// our copy of the shared rules IS the hub's copy (fingerprints match) and
+// that our JavaScript reading of those rules gives the hub's answers.
+// sha256 is a fingerprint of a file's bytes: change one byte and it changes.
+// The script_page family (the page-level "is this a script page" gate)
+// joined the contract list in v1.15.0.
+// Exit code 1 means RED: something to report on the hub issue, never
+// something to patch around locally.
 import { createRequire } from 'module';
 import crypto from 'crypto';
 import fs from 'fs';
@@ -29,6 +39,9 @@ import { fileURLToPath } from 'url';
 const require = createRequire(import.meta.url);
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
+// Where the hub checkout lives: --hub, or the SCRIPTPARSE_HUB variable, or a
+// sibling folder named scriptparse. The corpus and the hub's policy file
+// default to their usual places inside it.
 const args = process.argv.slice(2);
 const opt = (name, dflt) => { const i = args.indexOf(name); return i >= 0 && args[i + 1] ? args[i + 1] : dflt; };
 const hub = path.resolve(opt('--hub', process.env.SCRIPTPARSE_HUB || path.join(root, '..', 'scriptparse')));
@@ -37,6 +50,8 @@ const hubPolicyFile = path.resolve(opt('--policy', path.join(hub, 'scriptparse',
 const vendoredPolicyFile = path.join(root, 'policy', 'scriptparse-policy.json');
 const verbose = args.includes('--verbose') || args.includes('-v');
 
+// Fingerprints: raw, and with Windows line endings (CR) removed, because a
+// Windows checkout can change line endings without changing the content.
 const sha = buf => crypto.createHash('sha256').update(buf).digest('hex');
 const shaCR = buf => sha(Buffer.from(buf.toString('utf8').replace(/\r/g, ''), 'utf8'));
 const short = h => h.slice(0, 12) + '…';
@@ -52,12 +67,16 @@ const deepEq = (a, b) => {
   return false;
 };
 
+// No corpus present (a fresh clone without the hub next to it) is a SKIP,
+// not a failure, so npm test still runs anywhere.
 const manifestPath = path.join(corpusDir, 'manifest.json');
 if (!fs.existsSync(manifestPath)) {
   console.log(`CONFORMANCE: SKIP (no corpus at ${corpusDir}; pass --hub, --corpus, or set SCRIPTPARSE_HUB)`);
   process.exit(0);
 }
 
+// Every problem bumps the RED counter and prints a line; the final verdict
+// is simply whether that counter is zero.
 let red = 0;
 const fail = msg => { red++; console.log('  RED  ' + msg); };
 
@@ -68,6 +87,9 @@ const engine = require(path.join(root, 'engine.js'))({ pdfjsLib: {}, PDFLib: {},
 const pol = engine.policy;
 
 // ---- 1. consumability ----
+// Gate 1: can the corpus be used at all, and is our vendored policy exactly
+// the hub's? The manifest lists every vector file with its fingerprint and
+// case count, and names the policy version the vectors were built against.
 const manifestBuf = fs.readFileSync(manifestPath);
 const manifest = JSON.parse(manifestBuf.toString('utf8'));
 console.log(`corpus_version ${manifest.corpus_version}  policy_version(bound) ${manifest.policy_version}`);
@@ -82,6 +104,9 @@ if (fs.existsSync(hubPolicyFile)) {
   if (hp.policy_version !== manifest.policy_version) fail(`hub policy_version ${hp.policy_version} != manifest binding ${manifest.policy_version}`);
 } else console.log(`hub policy.json not found at ${hubPolicyFile} (byte-identity check skipped)`);
 if (vendored.policy_version !== manifest.policy_version) fail(`vendored policy_version ${vendored.policy_version} != manifest binding ${manifest.policy_version}`);
+// The policy must be plain data. A regular-expression object could not have
+// come out of JSON.parse, so this guards future code that might build the
+// policy some other way.
 const walk = (v, p) => {
   if (v instanceof RegExp) fail(`policy has a RegExp at ${p}`);
   else if (Array.isArray(v)) v.forEach((x, i) => walk(x, `${p}[${i}]`));
@@ -93,6 +118,9 @@ walk(vendored, 'policy');
 // most families, `cases` + `stats_cases` for script_page, the three named
 // blocks for burn_in
 const countCases = obj => Object.keys(obj).filter(k => Array.isArray(obj[k])).reduce((n, k) => n + obj[k].length, 0);
+// Per-file table: does each vector file exist, match its fingerprint, parse,
+// and hold the number of cases the manifest promises? Files that pass are
+// kept in `vectors` for gate 2.
 const vectors = {};
 console.log('\n| vector file | cases (manifest / file) | sha256 vs manifest | JSON.parse |');
 console.log('|---|---|---|---|');
@@ -116,9 +144,15 @@ const consumRed = red;
 console.log(`\nJS-consumability: ${consumRed ? 'RED (' + consumRed + ' problem(s) above)' : 'GREEN'}  (${manifest.files.length} files, ${total} cases, zero deps beyond JSON.parse)`);
 
 // ---- 2. contract: the engine's interpreter vs the vectors ----
+// Gate 2: feed every vector's input to our interpreter and compare the
+// answer to the hub's, structurally (the order of object keys does not
+// matter, the values do).
 console.log('\nContract (engine.js policy interpreter vs the hub vectors, deep-equal):');
 const misses = [];
 const summary = [];
+// run(): one family of vectors. Counts passes, remembers misses for
+// --verbose, and adds a row to the summary table. A family that did not load
+// is RED, not skipped.
 const run = (file, cases, fn, label) => {
   if (!cases) { summary.push(`| \`vectors/${file}.json\` | 0 | not loaded | RED |`); red++; return; }
   let ok = 0;
@@ -134,6 +168,8 @@ const run = (file, cases, fn, label) => {
   console.log(`  ${file}.json: ${ok}/${cases.length} ${pass ? 'green' : 'RED'}`);
 };
 const expectOf = (c, key) => Object.assign({}, c, { expect: c[key] });
+// Each family maps to the engine function that mirrors the hub's reference
+// function of the same name.
 run('normalize', vectors.normalize && vectors.normalize.cases, c => pol.normCue(c.raw), 'norm_cue (seating)');
 run('cue_gate', vectors.cue_gate && vectors.cue_gate.cases, c => pol.cueSemanticOk(c.cue), 'cue_semantic_ok');
 run('charset', vectors.charset && vectors.charset.cases, c => pol.cueCharsetOk(c.cue), 'cue_charset_ok');
@@ -142,6 +178,8 @@ run('part_of', vectors.part_of && vectors.part_of.cases, c => pol.partOf(c.cue, 
 run('parts', vectors.parts && vectors.parts.cases, c => pol.parts(c.parse, c.aliases), 'parts derivation');
 run('offers', vectors.offers && vectors.offers.cases, c => pol.foldCandidates(c.names), 'fold_candidates');
 run('dual', vectors.dual && vectors.dual.cases, c => pol.splitDualHeader(c.words), 'split_dual_header');
+// burn_in has three sub-blocks whose expected values live under different
+// field names, so they are folded into one list with a 'kind' tag.
 if (vectors.burn_in) {
   const b = vectors.burn_in;
   const cases = [
@@ -153,6 +191,9 @@ if (vectors.burn_in) {
     : c.kind === 'threshold' ? pol.repeatThreshold(c.pages)
     : pol.detectRepeatedBurnin(c.pages, c.page_heights), 'signal-2 cells / thresholds / strip decisions');
 } else run('burn_in', null);
+// script_page: gate cases (each carries its own max_line_ratio; null means
+// the density arm is off) plus the stats cases (the document-level medians
+// the gate divides by).
 if (vectors.script_page) {
   const v = vectors.script_page;
   const cases = [
@@ -163,6 +204,8 @@ if (vectors.script_page) {
     ? pol.pageIsScript(c.n_lines, c.median_line_size, c.doc_median_lines, c.doc_median_size, { maxLineRatio: c.max_line_ratio })
     : pol.scriptPageStats(c.pages), 'page_is_script gate (per-case max_line_ratio) / script_page_stats denominators');
 } else run('script_page', null);
+// margin_rows: consumed and counted, but this tool builds no scene list, so
+// there is nothing here to mirror.
 if (vectors.margin_rows) {
   summary.push(`| \`vectors/margin_rows.json\` | n/a (${countCases(vectors.margin_rows)}) | classify_margin_row: no consumer on this bench (no scene inventory); consumable, not mirrored | n/a |`);
   console.log(`  margin_rows.json: n/a (${countCases(vectors.margin_rows)} cases; no consumer on this bench, not mirrored)`);
@@ -170,6 +213,7 @@ if (vectors.margin_rows) {
 console.log('\n| vector file | green / cases | contract | verdict |');
 console.log('|---|---|---|---|');
 for (const s of summary) console.log(s);
+// --verbose prints each miss as: input -> our answer | the hub's answer
 if (verbose && misses.length) {
   console.log('\nMisses (input -> got | expect):');
   for (const m of misses) console.log(`  [${m.file}] ${JSON.stringify(m.input)} -> ${JSON.stringify(m.got)} | ${JSON.stringify(m.expect)}`);

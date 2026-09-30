@@ -5,6 +5,13 @@
 // standalone or from tools/test.sh.
 //
 //   node tools/test_sceneline.mjs
+//
+// What a .sceneline is: a JSON file Gotham's scene-breakdown tools share. It
+// is the authority for WHO speaks (names) and WHICH scenes exist; this tool
+// only adds page geometry from the PDF and writes its own "sides" block
+// back. The letters (b)..(e) are the acceptance items from the brief.
+// Exit code 1 means a test failed; every test still runs so the list is
+// complete.
 import { createRequire } from 'module';
 import { deepStrictEqual } from 'assert';
 import { execFileSync } from 'child_process';
@@ -29,12 +36,16 @@ const createSidesEngine = require(path.join(root, 'engine.js'));
 const policy = JSON.parse(fs.readFileSync(path.join(root, 'policy/scriptparse-policy.json'), 'utf8'));
 const engine = createSidesEngine({ pdfjsLib, PDFLib, policy });
 
+// The synthetic PDFs the tests read (single-episode and multi-episode).
+// Generate them if a fresh clone has none.
 const fixture = path.join(root, 'out', 'fixture.pdf');
 const fixtureMulti = path.join(root, 'out', 'fixture_multi.pdf');
 if (!fs.existsSync(fixture) || !fs.existsSync(fixtureMulti)) {
   execFileSync('python3', [path.join(root, 'tools', 'make_fixture.py')], { stdio: 'ignore' });
 }
 
+// Tiny test runner: each test records PASS or FAIL with its message and the
+// next one still runs.
 let failed = 0;
 const results = [];
 async function test(name, fn) {
@@ -42,6 +53,8 @@ async function test(name, fn) {
   catch (e) { results.push(['FAIL', name + ' — ' + (e && e.message)]); failed++; }
 }
 function assert(cond, msg) { if (!cond) throw new Error(msg || 'assertion failed'); }
+// run(): the engine's normal report for a PDF. pdfFacts(): only the parts
+// reconcile needs (the names found and the scene headings found).
 const run = async pdf => (await engine.process(new Uint8Array(fs.readFileSync(pdf)), { scale: 1.25 })).report;
 const pdfFacts = r => ({ characters: r.characters, sluglines: r.sluglines });
 
@@ -70,6 +83,9 @@ await test('(e) v1 file imports cleanly', async () => {
 });
 
 // ---- (b) authoritative identity + reconcile against PDF geometry ----
+// "reconcile" = match the file's names to the names found on the pages. A
+// file name with no pages gets a chip in the UI (not an error); a page name
+// missing from the file is shown in a secondary group.
 await test('(b) file identity is authoritative; geometry gives pages; unmatched -> chip', async () => {
   const report = await run(fixture);
   const pdfNames = new Set(report.characters.map(c => c.name));
@@ -111,6 +127,9 @@ await test('(b) file identity is authoritative; geometry gives pages; unmatched 
 });
 
 // ---- (c) multi-episode packet: subset check, no false alarms ----
+// Sides packets pull pages from several episodes, so the PDF's headings are
+// checked as a SUBSET of the union of every loaded show file. Comparing
+// scene counts would always mismatch and mean nothing.
 await test('(c) stitched packet vs multiple shows raises no false alarms; a foreign slug does', async () => {
   const report = await run(fixtureMulti);
   const heads = report.sluglines.map(s => s.text);
@@ -141,6 +160,9 @@ await test('(c) stitched packet vs multiple shows raises no false alarms; a fore
 });
 
 // ---- (d) round-trip law: foreign blocks survive deep-equal ----
+// Whatever OTHER tools stored in the file (sound, video, experiments,
+// unknown top-level fields) must come back unchanged after our export,
+// compared by value, not by bytes.
 await test('(d) round-trip preserves foreign blocks deep-equal; sides reflects edits', async () => {
   const base = {
     format: 'sceneline', interchange: 2,
@@ -184,6 +206,9 @@ await test('(d) round-trip preserves foreign blocks deep-equal; sides reflects e
 });
 
 // ---- profiles: lean drops screenplay text; full keeps it; foreign untouched ----
+// "lean" strips screenplay text so a file can be shared with cast and crew
+// without carrying the script; "full" keeps it. Neither may touch the
+// foreign blocks or the input object.
 await test('(profiles) lean strips show text, full keeps it, foreign block still deep-equal', async () => {
   const full = {
     format: 'sceneline', interchange: 2, source: { title: 'X', profile: 'full' },

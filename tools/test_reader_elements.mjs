@@ -5,6 +5,11 @@
 // yields the same page count as process({mode:'reader'}).
 //
 // Usage: node tools/test_reader_elements.mjs [fixture.pdf]
+//
+// Why: Sides Helper (a separate app) reads sides through this element stream
+// instead of the reader PDF, so the stream must carry everything the PDF
+// path knows, and the two must never drift apart.
+// Exit code 1 means an assertion failed; the failing checks are listed.
 import { createRequire } from 'module';
 import fs from 'fs';
 import path from 'path';
@@ -23,14 +28,24 @@ const engine = createSidesEngine({ pdfjsLib, PDFLib, policy });
 
 const src = process.argv[2] || path.join(root, 'out/fixture.pdf');
 const bytes = new Uint8Array(fs.readFileSync(src));
+// Collect failures instead of stopping at the first, so one run shows
+// everything that is wrong.
 const fails = [];
 const ok = (cond, msg) => { if (!cond) fails.push(msg); };
 
+// Two highlighted characters (palette indexes 0 and 2), so the highlight
+// data on elements gets exercised.
 const hlIn = { 'LAURA': 0, 'MERC #1': 2 };
 const { elements, report } = await engine.reader(bytes, { highlights: hlIn });
 ok(Array.isArray(elements) && elements.length > 0, 'no elements');
 ok(report.elements === elements.length, 'report.elements mismatch');
+// The only element kinds reader mode may emit. 'break' marks where an
+// original page started (reader mode reflows, so page numbers change).
 const types = new Set(['break', 'slug', 'action', 'cue', 'paren', 'dialogue', 'transition']);
+// Every element must be well-formed: numbered in order, a known kind,
+// non-empty text, a source page and its printed label, a speaker name on
+// cues and dialogue, a heading on slugs, and highlight data only for the
+// names we asked to highlight.
 elements.forEach((el, i) => {
   ok(el.i === i, `element ${i}: index`);
   ok(types.has(el.t), `element ${i}: type ${el.t}`);
@@ -53,7 +68,9 @@ for (const el of elements) { if (el.t === 'slug') seenSlug = true; if (seenSlug 
 ok(Array.isArray(report.characters) && report.characters.length, 'report.characters missing');
 ok(Array.isArray(report.sluglines), 'report.sluglines missing');
 
-// same stream as the PDF path
+// same stream as the PDF path: rendering the elements ourselves must give the
+// same page count as the engine's own reader PDF, and the same number of
+// page breaks
 const pdfRun = await engine.process(bytes, { mode: 'reader', scale: 1.25, highlights: hlIn });
 const pdfDoc = await PDFLib.PDFDocument.load(pdfRun.bytes);
 const rendered = await engine.renderReaderPdf(elements, 1.25, hlIn);
