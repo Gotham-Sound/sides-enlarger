@@ -335,7 +335,11 @@ window.__bootSides__ = function (pdfjs) {
     // give the user control over the only thing stored on the device:
     // their name -> size/mode/colors map (script-derived, never transmitted)
     var forgetBtn = document.getElementById('forget');
-    if (localStorage.getItem(PREFS)) forgetBtn.hidden = false;
+    // storage can throw where a browser blocks site data (some private modes,
+    // Safari with site data off): the page must still start, just without prefs
+    var saved = false;
+    try { saved = !!localStorage.getItem(PREFS); } catch (e) {}
+    if (saved) forgetBtn.hidden = false;
     forgetBtn.addEventListener('click', function () {
       try { localStorage.removeItem(PREFS); } catch (e) {}
       location.reload();
@@ -349,7 +353,10 @@ window.__bootSides__ = function (pdfjs) {
   }
   function savePrefs(p) {
     if (!who) return;
-    try { localStorage.setItem(PREFS, JSON.stringify(p)); } catch (e) {}
+    try {
+      localStorage.setItem(PREFS, JSON.stringify(p));
+      document.getElementById('forget').hidden = false; // there is now something to forget
+    } catch (e) {}
   }
 
   // ---- elements ----
@@ -384,7 +391,7 @@ window.__bootSides__ = function (pdfjs) {
   if (prefs.scale >= 1 && prefs.scale <= 1.5) slider.value = prefs.scale;
   scaleVal.innerHTML = (+slider.value).toFixed(2) + '&times;';
   prefs.charColors = prefs.charColors || {};   // NAME -> palette index
-  prefs.hiddenChars = prefs.hiddenChars || []; // names unticked as junk
+  delete prefs.hiddenChars; // retired (v1.16.1): nothing could set it, but old saves may carry it and it silently hid names
   prefs.manualNames = prefs.manualNames || []; // names the user typed in
   prefs.enlargeMode = prefs.enlargeMode || 'all';   // all | selected | page
   prefs.enlargeChars = prefs.enlargeChars || {};    // NAME -> true (selected mode)
@@ -403,9 +410,8 @@ window.__bootSides__ = function (pdfjs) {
 
   // ---- character rail ----
   // railNorm: names are compared uppercase with single spaces, the way the
-  // engine reports them. isHidden: names the saved settings keep off the rail.
+  // engine reports them.
   function railNorm(n) { return String(n || '').toUpperCase().replace(/\s+/g, ' ').trim(); }
-  function isHidden(n) { return prefs.hiddenChars.indexOf(n) !== -1; }
 
   // the list of characters the rail shows, in display order
   function charModel() {
@@ -498,7 +504,7 @@ window.__bootSides__ = function (pdfjs) {
     if (!originalBytes) return;
     charRail.className = 'on';
     charList.innerHTML = '';
-    var model = charModel().filter(function (c) { return !isHidden(c.name); });
+    var model = charModel();
     var visible = {};
     model.forEach(function (c) { visible[c.name] = true; });
     var sel = prefs.enlargeMode === 'selected';
@@ -579,7 +585,6 @@ window.__bootSides__ = function (pdfjs) {
 
   // the user tapped a colour circle (or the 'none' circle) next to a name
   function assignColor(name, idx) {
-    var old = prefs.charColors[name];
     if (idx == null) delete prefs.charColors[name];
     else {
       // colors may be shared (v1.16.0, Peter's call): "me" in one color and
@@ -597,7 +602,7 @@ window.__bootSides__ = function (pdfjs) {
 
   // names ticked READING in Selected mode; the engine gets this list as enlargeOnly
   function tickedNames() {
-    return Object.keys(prefs.enlargeChars).filter(function (n) { return prefs.enlargeChars[n] && !isHidden(n); });
+    return Object.keys(prefs.enlargeChars).filter(function (n) { return prefs.enlargeChars[n]; });
   }
   // Seed (Selected mode): when nobody is ticked, whoever already has a
   // highlight color is who you're reading. Runs when Selected mode is entered
@@ -608,7 +613,7 @@ window.__bootSides__ = function (pdfjs) {
     if (tickedNames().length) return false;
     var seeded = false;
     for (var name in prefs.charColors) {
-      if (prefs.charColors[name] != null && !isHidden(name)) { prefs.enlargeChars[name] = true; seeded = true; }
+      if (prefs.charColors[name] != null) { prefs.enlargeChars[name] = true; seeded = true; }
     }
     if (seeded) savePrefs(prefs);
     return seeded;
@@ -657,12 +662,10 @@ window.__bootSides__ = function (pdfjs) {
     scheduleProcess();
   }
 
-  // 'Add a missed name': a typed name joins the rail (and comes back if it was hidden)
+  // 'Add a missed name': a typed name joins the rail
   chAddBtn.addEventListener('click', function () {
     var n = railNorm(chAddName.value);
     if (!n) return;
-    var i = prefs.hiddenChars.indexOf(n);
-    if (i !== -1) prefs.hiddenChars.splice(i, 1);
     if (prefs.manualNames.indexOf(n) === -1) prefs.manualNames.push(n);
     chAddName.value = '';
     savePrefs(prefs);
@@ -674,7 +677,7 @@ window.__bootSides__ = function (pdfjs) {
   function activeHighlights() {
     var hl = {};
     for (var name in prefs.charColors) {
-      if (!isHidden(name)) hl[name] = prefs.charColors[name];
+      hl[name] = prefs.charColors[name];
     }
     return hl;
   }
@@ -775,7 +778,6 @@ window.__bootSides__ = function (pdfjs) {
   function currentSidesCharacters() {
     var out = [];
     charModel().forEach(function (c) {
-      if (isHidden(c.name)) return;
       var pIdx = prefs.charColors[c.name];
       out.push({
         name: c.name,
@@ -873,7 +875,9 @@ window.__bootSides__ = function (pdfjs) {
     prevPg.disabled = curPage <= 1;
     nextPg.disabled = curPage >= numPages;
     var seq = ++renderSeq;
-    if (curPage <= docB.numPages) renderPage(docB, pvB, curPage, seq);
+    // the Original preview is hidden in Reader mode, so skip its render there
+    // (the mode switch re-runs the engine and lands back here, so it returns)
+    if (curPage <= docB.numPages && prefs.enlargeMode !== 'reader') renderPage(docB, pvB, curPage, seq);
     renderPage(docA, pvA, curPage, seq);
   }
   prevPg.addEventListener('click', function () { showPage(curPage - 1); });
@@ -922,7 +926,11 @@ window.__bootSides__ = function (pdfjs) {
     (report.pages || []).forEach(function (p) {
       (p.highlighted || []).forEach(function (n) { painted[n] = true; });
     });
-    var parts = names.filter(function (n) { return report.mode === 'reader' || painted[n]; })
+    // Reader mode has no per-page paint list; a saved colour for a name with
+    // no lines in this packet must not be announced as a highlight
+    var spoken = {};
+    (report.characters || []).forEach(function (c) { if (c.lines > 0) spoken[c.name] = true; });
+    var parts = names.filter(function (n) { return report.mode === 'reader' ? spoken[n] : painted[n]; })
       .map(function (n) { return n + ' (' + hl[n].key + ')'; });
     return parts.length ? ' Highlighted: ' + parts.join(', ') + '.' : '';
   }

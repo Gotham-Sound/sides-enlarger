@@ -410,7 +410,7 @@ rules that most often apply here:
   vs `manifest.json`, zero-dep JSON.parse, policy binding, and the vendored
   `policy/scriptparse-policy.json` byte-identical to the hub's) and contract (the
   engine's interpreter deep-equal on normalize, cue_gate, charset, fold, part_of,
-  parts, offers, dual, burn_in; margin_rows has no consumer here and is reported
+  parts, offers, dual, burn_in, script_page; margin_rows has no consumer here and is reported
   n/a). It prints the manifest sha256 (the ack number, raw and CR-stripped).
   **Policy bump = copy the hub's `scriptparse/policy.json` over the vendored file,
   run this, run the gates, post the numbers on the hub issue.** A red contract

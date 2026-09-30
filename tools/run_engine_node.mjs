@@ -8,7 +8,7 @@
 // enlarged PDF to <out.pdf> and a JSON "report" (what the engine found and
 // what it did to each page) next to it as <out.pdf>.report.json, and prints
 // that report.
-// Also accepted: --mode=reader, --emit=elements (write reader-mode elements
+// Also accepted: --mode=reader, --emit=elements | --emit=analyze (write reader-mode elements
 // as JSON instead of a PDF), --watermark-text="A|B" (text to treat as a
 // watermark, not script).
 // Exit codes: 0 ok; 3 the PDF is a scan with no real text layer; anything
@@ -69,6 +69,7 @@ for (const f of argv.filter(a => a.startsWith('--'))) {
   if (f === '--mode=page') mode = 'page';
   else if (f === '--mode=reader') mode = 'reader';
   else if (f === '--emit=elements') emit = 'elements';
+  else if (f === '--emit=analyze') emit = 'analyze';
   else if (f.startsWith('--enlarge-only=')) {
     enlargeOnly = f.slice('--enlarge-only='.length).split(';').map(s => s.trim()).filter(Boolean);
   } else if (f.startsWith('--watermark-text=')) {
@@ -87,6 +88,14 @@ const bytes = new Uint8Array(fs.readFileSync(inFile));
 try {
   // --emit=elements: reader mode as data (one element per slug, cue, line of
   // dialogue, ...) for tools that draw their own reading view, e.g. Sides Helper.
+  // --emit=analyze: the extraction-only report (characters, rails, per-page
+  // counts) with no PDF written; test.sh compares it with a full run's report.
+  if (emit === 'analyze') {
+    const report = await engine.analyze(bytes);
+    fs.writeFileSync(outFile, JSON.stringify(report, null, 2));
+    console.log(JSON.stringify(report, null, 2));
+    process.exit(0);
+  }
   if (emit === 'elements') {
     const { elements, report } = await engine.reader(bytes, { highlights, watermarkText });
     fs.writeFileSync(outFile, JSON.stringify({ elements, report }, null, 2));
