@@ -5,6 +5,14 @@
 #
 #   bash tools/test.sh                 # fixture only (safe, in-repo)
 #   bash tools/test.sh path/to/real.pdf [more.pdf ...]   # + your local sides
+#
+# How to read this file: it is a list of sections. Each section runs the
+# engine (tools/run_engine_node.mjs) on a fixture in some mode, then asks the
+# independent verifier (tools/check.py) or a short Python check whether the
+# result keeps the promise, and prints one "[name] PASS" or "[name] FAIL"
+# line. Any failure sets fail=1; the script keeps going so one run shows
+# everything that is wrong, then exits non-zero at the end. Outputs go to
+# out/ (never committed); side-by-side page pictures go to out/renders/.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -15,6 +23,9 @@ echo "==> generating synthetic fixture"
 python3 tools/make_fixture.py
 
 fail=0
+# run_one: enlarge one PDF at three sizes (no change, a quarter bigger, half
+# bigger) and verify each result. "SCANNED" means the engine refused a PDF
+# that is only pictures of pages, which is the correct answer, not a failure.
 run_one () {
   local src="$1" tag="$2"
   for scale in 1.0 1.25 1.5; do
@@ -38,6 +49,8 @@ run_one () {
   done
 }
 
+# check_one: verify one already-produced output against its source and print
+# a PASS/FAIL line. On failure the verifier runs again to show its reasons.
 check_one () {  # src outpdf label renderdir
   local src="$1" outpdf="$2" label="$3" rdir="$4"
   if CHECK_RENDER_DIR="$rdir" python3 tools/check.py "$src" "$outpdf" "${outpdf}.report.json" \
@@ -50,6 +63,9 @@ check_one () {  # src outpdf label renderdir
   fi
 }
 
+# Proves the engine still reads text through the streaming shim that older
+# iPhone and iPad browsers need. A failure means the page would break on
+# those devices even though everything passes here in Node.
 echo "==> ios/webkit floor: getTextContent ReadableStream async-iterator (scriptparse #43 cliff 2)"
 if node tools/test_ios_stream.mjs out/fixture.pdf 2>/dev/null | grep -q '^IOS-STREAM: ok'; then
   echo "    [ios stream polyfill] PASS"
@@ -59,9 +75,14 @@ else
   fail=1
 fi
 
+# The core promise, on the synthetic script: every page stays identical
+# except that dialogue grows by exactly the requested amount.
 echo "==> testing fixture"
 run_one out/fixture.pdf fixture
 
+# Proves the character list is right: the real speakers are found, and the
+# traps (text under a grey box, a call sheet, a name the shared rule rejects)
+# stay off the list and are announced in the report instead of vanishing.
 echo "==> fixture: character extraction"
 python3 - <<'PY' && echo "    [extraction] PASS" || { echo "    [extraction] FAIL"; fail=1; }
 import json, sys
@@ -108,6 +129,8 @@ if names != expected:
     sys.exit(1)
 PY
 
+# Proves highlight rectangles land exactly on the chosen characters' lines,
+# cover every word of them, and touch nobody else's text.
 echo "==> fixture: highlights (LAURA=yellow, MERC #1=sky)"
 for scale in 1.0 1.25; do
   outpdf="out/fixture.hl.${scale}.pdf"
@@ -125,6 +148,7 @@ for scale in 1.0 1.25; do
   fi
 done
 
+# The same check with colors from the second half of the sixteen-color palette.
 echo "==> fixture: highlights on the second eight (LAURA=coral, MERC #1=tan; v1.14.0)"
 outpdf="out/fixture.hl16.pdf"
 node tools/run_engine_node.mjs out/fixture.pdf "$outpdf" 1.25 'LAURA=8;MERC #1=15' \
@@ -140,6 +164,7 @@ else
   fail=1
 fi
 
+# Two characters on one color: both get painted, and the report records both.
 echo "==> fixture: shared highlight color (LAURA + MORROW = yellow, MERC #1 = sky; v1.16.0)"
 outpdf="out/fixture.hlshare.pdf"
 node tools/run_engine_node.mjs out/fixture.pdf "$outpdf" 1.25 'LAURA=0;MORROW=0;MERC #1=2' \
@@ -160,6 +185,9 @@ else
   fail=1
 fi
 
+# Guards the palette itself by reading it out of engine.js: sixteen distinct
+# light colors, none an even grey (a grey fill reads as an omitted-text box
+# and would make the verifier think the highlighted lines had vanished).
 echo "==> palette: sixteen entries, unique keys and hexes, light enough to print gray (luma >= 0.87), none an even grey (spread > 0.05)"
 if node --input-type=module -e '
   import { createRequire } from "node:module";
@@ -181,16 +209,22 @@ else
   echo "    [palette] FAIL"; fail=1
 fi
 
+# Selected-characters mode: only LAURA's lines grow; MERC #1 is highlighted
+# but must stay at the original size like everything else.
 echo "==> fixture: selective enlargement (only LAURA; highlight on unenlarged MERC #1)"
 node tools/run_engine_node.mjs out/fixture.pdf out/fixture.sel.pdf 1.25 'MERC #1=2' --enlarge-only='LAURA' \
   >/dev/null 2>out/fixture.sel.err || { echo "    [selective] ENGINE ERROR:"; cat out/fixture.sel.err; fail=1; }
 check_one out/fixture.pdf out/fixture.sel.pdf "selective @ 1.25" "$RENDER_DIR/fixture_sel"
 
+# Everything mode: all body text grows toward the margins on its own line;
+# page numbers, scene numbers, revision stars and headers stay put.
 echo "==> fixture: whole-page mode"
 node tools/run_engine_node.mjs out/fixture.pdf out/fixture.page.pdf 1.5 'LAURA=0' --mode=page \
   >/dev/null 2>out/fixture.page.err || { echo "    [page mode] ENGINE ERROR:"; cat out/fixture.page.err; fail=1; }
 check_one out/fixture.pdf out/fixture.page.pdf "page mode @ 1.5" "$RENDER_DIR/fixture_page"
 
+# Reader mode, the one mode allowed to reflow: proves no word is lost or
+# invented, the size is right, and the call sheet is left out entirely.
 echo "==> fixture: reader mode"
 node tools/run_engine_node.mjs out/fixture.pdf out/fixture.reader.pdf 1.25 'LAURA=0' --mode=reader \
   >/dev/null 2>out/fixture.reader.err || { echo "    [reader mode] ENGINE ERROR:"; cat out/fixture.reader.err; fail=1; }
@@ -336,6 +370,8 @@ if "5.46pt1" not in txt:
     print("      mid-scene left-margin scene number was eaten as furniture"); sys.exit(1)
 PY
 
+# For real PDFs passed on the command line (never committed): the same
+# modes as above, driven by the most talkative character the engine found.
 # real sides: whole-page mode + selective enlargement of the top character
 run_modes () {
   local src="$1" tag="$2"
@@ -373,6 +409,8 @@ run_hl () {
   fi
 }
 
+# The reader-mode API that other Gotham tools consume (Sides Helper): the
+# element list and the PDF renderer must describe the same text.
 echo "==> reader mode as a function (engine.reader / renderReaderPdf)"
 if node tools/test_reader_elements.mjs out/fixture.pdf 2>/dev/null | grep -q '^READER-ELEMENTS: ok'; then
   echo "    [reader elements] PASS"
@@ -382,6 +420,8 @@ else
   fail=1
 fi
 
+# The Netflix sides-link rewrite is a pure text change: proves it recognises
+# only that one host and leaves every other link alone. No network is used.
 echo "==> studio sides-link rewrite (pure, no network)"
 if node tools/test_links.mjs 2>/dev/null | tee /tmp/links.out | grep -q '^LINKS: all'; then
   grep '    \[' /tmp/links.out
@@ -390,6 +430,8 @@ else
   echo "    [links] FAIL"; fail=1
 fi
 
+# The .sceneline file exchanged with Gotham's other tools: import, reconcile
+# its names against the PDF, export again without losing anything.
 echo "==> .sceneline interchange (import/reconcile/export, acceptance a-e)"
 if node tools/test_sceneline.mjs 2>/dev/null | tee /tmp/sceneline.out | grep -q '^SCENELINE: all'; then
   grep '    \[' /tmp/sceneline.out
@@ -409,6 +451,8 @@ else
   echo "    [conformance] FAIL"; fail=1
 fi
 
+# Real sides given on the command line get the full battery, one file at a
+# time. Their outputs and renders stay in out/, which is never committed.
 for real in "$@"; do
   name="$(basename "$real" .pdf)"
   echo "==> testing real: $name"
@@ -417,6 +461,7 @@ for real in "$@"; do
   run_modes "$real" "real_${name}"
 done
 
+# one-line verdict; the non-zero exit is what fails npm test and CI
 echo
 if [ "$fail" -eq 0 ]; then
   echo "ALL GREEN. Side-by-side renders in $RENDER_DIR/"

@@ -3,6 +3,14 @@
 
 Layout mimics Final Draft output: 12pt Courier, US Letter, meaning-by-indent.
 Per-page horizontal drift simulates photocopied sides.
+
+How it is used: tools/test.sh runs this first, with no arguments. It writes
+four PDFs into out/ (a clean script, a multi-episode "day" side, a
+watermarked copy and a burned-in-stamp copy). Each page is a list of
+tokens, (kind, text); the kind decides the indent and any special drawing.
+Every page exists to prove one thing, stated in the comment above it, so
+a change to the engine's rules usually means adding a page or a token here.
+No real script text is used anywhere; this is the only fixture in the repo.
 """
 import os
 from reportlab.lib.pagesizes import letter
@@ -13,18 +21,24 @@ FONT = "Courier"
 SIZE = 12
 LEAD = 12  # 6 lines per inch
 
-# nominal columns (points)
+# nominal columns (points). In a screenplay the indent carries the meaning:
+# action starts at the left, dialogue is indented, the character's name
+# (the cue) sits further in, and transitions hug the right. The engine
+# reads these positions, never the words.
 X_ACTION = 108   # 1.5"
 X_DIAL   = 180   # 2.5"
 X_PAREN  = 223   # ~3.1"
 X_CUE    = 266   # ~3.7"
 X_TRANS  = 420
 
+# the clean fixture lands in out/ next to the repo (out/ is never committed)
 OUT = os.path.join(os.path.dirname(__file__), "..", "out", "fixture.pdf")
 
 # token types: (kind, text) — kind decides indent
 PAGES = [
-    # page 1
+    # page 1: the plain case. A running header, a scene heading, action,
+    # three cues with dialogue under them, a transition. Nothing tricky:
+    # this is the page every mode must get right before anything else.
     [
         ("head", "EPISODE 407 - \"NIGHT WORK\""),
         ("blank",), ("blank",),
@@ -335,6 +349,9 @@ MULTI_BODY = [
 
 
 def make_multi(path):
+    """Write the multi-episode day-side fixture (see the comment block
+    above): six pages whose header changes every page except for the show
+    name, drawn one letter at a time across the body's left edge."""
     c = canvas.Canvas(path, pagesize=letter)
     for pi, (ep, title, draft, date, pnum) in enumerate(MULTI_HEAD):
         c.setFont(FONT, SIZE)
@@ -385,6 +402,10 @@ def _wm_glyph(c, y, drift):
 
 
 def _draw_page(c, pi, page, watermark=False, burnin=False):
+    """Draw one page of PAGES onto the canvas. Walks the page's tokens top
+    to bottom, moving the pen down one line (LEAD) per token; each kind
+    picks its indent and any special treatment. watermark adds a rotated
+    glyph on minor cues; burnin adds the fixed per-page stamp."""
     drift = (pi * 3) - 4 if pi < 6 else 2  # photocopy drift, mild on 7-8
     if burnin:
         # light-grey horizontal stamp, no drift (burned in, not photocopied)
@@ -402,15 +423,18 @@ def _draw_page(c, pi, page, watermark=False, burnin=False):
         if kind == "blank":
             y -= LEAD
             continue
+        # running header row (show or episode title) at the action indent
         if kind == "head":
             c.drawString(X_ACTION + drift, y, tok[1])
             y -= LEAD
             continue
+        # two character names side by side: the header row of dual dialogue
         if kind == "dual_cues":
             c.drawString(150 + drift, y, tok[1])
             c.drawString(330 + drift, y, tok[2])
             y -= LEAD
             continue
+        # the two columns of dual dialogue under those names
         if kind == "dual":
             c.drawString(115 + drift, y, tok[1])
             c.drawString(295 + drift, y, tok[2])
@@ -425,6 +449,8 @@ def _draw_page(c, pi, page, watermark=False, burnin=False):
                 x += (len(word) + 1) * 7.2  # Courier 12: 7.2pt/char
             y -= LEAD
             continue
+        # place the shared stationery (defined once in _new_canvas) on this
+        # page; using it on two pages is what makes it a multi-use form
         if kind == "sharedform":
             c.doForm("SharedNote")
             continue
@@ -480,6 +506,7 @@ def _draw_page(c, pi, page, watermark=False, burnin=False):
                 _wm_glyph(c, y, drift)
             y -= LEAD
             continue
+        # every remaining kind is one string at its column's indent
         x = {"slug": X_ACTION, "action": X_ACTION, "cue": X_CUE,
              "dial": X_DIAL, "paren": X_PAREN, "more": X_DIAL,
              "trans": X_TRANS, "trapcue": X_CUE}[kind]
@@ -491,6 +518,8 @@ def _draw_page(c, pi, page, watermark=False, burnin=False):
 
 
 def _new_canvas(path):
+    """a fresh PDF canvas with the shared stationery form already defined,
+    so any page can stamp it with a single instruction"""
     c = canvas.Canvas(path, pagesize=letter)
     # a form XObject shared by pages 7-8 (multi-use container with text)
     c.beginForm("SharedNote")
@@ -529,6 +558,7 @@ def make_burnin(path):
 
 
 def main():
+    """write all four fixtures into out/"""
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     c = _new_canvas(OUT)
     for pi, page in enumerate(PAGES):

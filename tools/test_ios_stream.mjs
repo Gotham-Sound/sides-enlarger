@@ -6,6 +6,13 @@
 // the engine's main-thread polyfill recovers.
 //
 // Usage: node tools/test_ios_stream.mjs [fixture.pdf]
+//
+// Why it matters: the page ships as one file that must also work on an
+// iPhone. Node passing on its own would prove nothing about Safari, so the
+// test first removes the feature those Safari versions lack, then checks two
+// things: plain pdf.js now fails (so the test really recreates the phone),
+// and the engine still works (its fallback covers the gap).
+// Exit code 1 means one of those two checks failed.
 import { createRequire } from 'module';
 import fs from 'fs';
 import path from 'path';
@@ -13,6 +20,8 @@ import { fileURLToPath, pathToFileURL } from 'url';
 
 const require = createRequire(import.meta.url);
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+// Same setup as run_engine_node.mjs: pdf-lib, a DOMMatrix stand-in so pdf.js
+// can load in Node (it is a browser class), then the engine.
 const PDFLib = require(path.join(root, 'node_modules/pdf-lib/dist/pdf-lib.js'));
 if (typeof globalThis.DOMMatrix === 'undefined') {
   globalThis.DOMMatrix = class { constructor(){ this.a=1;this.b=0;this.c=0;this.d=1;this.e=0;this.f=0; } };
@@ -20,10 +29,14 @@ if (typeof globalThis.DOMMatrix === 'undefined') {
 const pdfjsLib = await import(pathToFileURL(path.join(root, 'node_modules/pdfjs-dist/legacy/build/pdf.mjs')).href);
 const createSidesEngine = require(path.join(root, 'engine.js'));
 
+// The synthetic fixture PDF from make_fixture.py by default; any PDF works.
 const fixture = process.argv[2] || path.join(root, 'out/fixture.pdf');
 const bytes = new Uint8Array(fs.readFileSync(fixture));
 
 // simulate a pre-Safari-26 WebKit: ReadableStream is not async-iterable
+// (a ReadableStream is how pdf.js hands over page text in chunks; deleting
+// its async iterator recreates the older Safari that could not loop over
+// one with for-await)
 function stripStreamAsyncIterator() {
   try { delete ReadableStream.prototype[Symbol.asyncIterator]; } catch {}
   try { delete ReadableStream.prototype.values; } catch {}

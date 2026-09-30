@@ -1,9 +1,13 @@
-// Bundle everything into one self-contained sidesenlarger.html
-// usage: node build.mjs
+// Bundle everything into one self-contained index.html (the file that ships).
+// usage: node build.mjs   (also `npm run build`)
+// It reads ui_template.html and replaces its placeholders with the libraries,
+// the engine, the policy data, the logo and the version, so the finished page
+// needs no other file and makes no network request.
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
+// the repo folder, so the script works from any current directory
 const root = path.dirname(fileURLToPath(import.meta.url));
 const read = f => fs.readFileSync(path.join(root, f), 'utf8');
 
@@ -17,11 +21,15 @@ const safe = s => s.replace(/<\/script/gi, '<\\/script');
 const pdfjsB64 = fs.readFileSync(path.join(root, 'node_modules/pdfjs-dist/legacy/build/pdf.min.mjs')).toString('base64');
 const workerB64 = fs.readFileSync(path.join(root, 'node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs')).toString('base64');
 const logoB64 = fs.readFileSync(path.join(root, 'assets/gothamsound_green-and-black.png')).toString('base64');
+// the version stamp shown in the page footer comes from package.json
 const version = JSON.parse(read('package.json')).version;
 // the scriptparse policy data (identity rulings as versioned JSON, vendored
 // byte-identical from the hub; tools/conformance_check.mjs verifies it)
 const policyJson = JSON.stringify(JSON.parse(read('policy/scriptparse-policy.json')));
 
+// Each placeholder is replaced exactly once. The replacements are functions
+// (() => value) on purpose: a plain string would have its '$' characters
+// treated as special replacement patterns, and the libraries contain many.
 const template = read('ui_template.html');
 const out = template
   .replace('/*__PDFJS_B64__*/', () => pdfjsB64)
