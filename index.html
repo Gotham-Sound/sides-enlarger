@@ -2465,7 +2465,9 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.22a","_comment":"The cross-l
       const ensure = h => { if (y - h < BOT) newPage(); };
       // opts2.underline (v1.17.0): how many words, counted from the END of this
       // run of lines, carry the outcue underline. Drawn after the text in the
-      // text's own color (never a second color), a hair below the baseline.
+      // text's own color (never a second color), below the descenders so g, y
+      // and p do not cross it, and heavy enough to read at a glance on a phone
+      // (about 1.4pt under 15pt type; a hairline there was too faint).
       const drawLines = (lines, font, sz, opts2) => {
         const totalWords = opts2.underline ? lines.reduce((n2, ln) => n2 + ln.split(' ').length, 0) : 0;
         let seenWords = 0;
@@ -2490,9 +2492,9 @@ var SCRIPTPARSE_POLICY = {"policy_version":"2026.09.22a","_comment":"The cross-l
             if (j < words.length) {
               // the text is drawn as one string, so a word's x is the width of what precedes it
               const lead = j ? font.widthOfTextAtSize(words.slice(0, j).join(' ') + ' ', sz) : 0;
-              const uy = y - lh + sz * 0.32 - sz * 0.11;
+              const uy = y - lh + sz * 0.32 - sz * 0.28;
               page.drawLine({ start: { x: x + lead, y: uy }, end: { x: x + tw, y: uy },
-                thickness: Math.max(0.5, sz * 0.05), color: PDFLib.rgb(0, 0, 0) });
+                thickness: Math.max(0.8, sz * 0.09), color: PDFLib.rgb(0, 0, 0) });
             }
             seenWords += words.length;
           }

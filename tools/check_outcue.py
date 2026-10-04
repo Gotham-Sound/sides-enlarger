@@ -67,7 +67,7 @@ def underlined_words(doc):
         words = page.get_text("words")  # x0, y0, x1, y1, text, ...
         for d in page.get_drawings():
             col, width = d.get("color"), d.get("width") or 0
-            if col is None or max(col) > 0.05 or width > 1.5:
+            if col is None or max(col) > 0.05 or width > 2.5:
                 continue  # not a black hairline: break rules are gray, the scene rule is thick
             for it in d["items"]:
                 if it[0] != "l":
@@ -76,9 +76,11 @@ def underlined_words(doc):
                 if abs(p1.y - p2.y) > 0.5:
                     continue
                 x0, x1, yy = min(p1.x, p2.x), max(p1.x, p2.x), p1.y
-                # the line sits in the lower half of the word's box (just under the baseline)
+                # the line sits in the lower half of the word's box or just under it
+                # (it is drawn below the descenders, about a quarter of the type size
+                # under the baseline)
                 hit = [w for w in words
-                       if w[0] < x1 - 0.5 and w[2] > x0 + 0.5 and (w[1] + 0.5 * (w[3] - w[1])) <= yy <= w[3] + 1.5]
+                       if w[0] < x1 - 0.5 and w[2] > x0 + 0.5 and (w[1] + 0.5 * (w[3] - w[1])) <= yy <= w[3] + 3.5]
                 if not hit:
                     stray += 1
                 got += [w[4] for w in hit]
