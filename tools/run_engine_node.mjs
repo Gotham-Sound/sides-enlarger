@@ -1,6 +1,6 @@
 // Headless engine run:
 //   node tools/run_engine_node.mjs <in.pdf> <out.pdf> [scale] ["NAME=paletteIdx;NAME2=paletteIdx"] \
-//        [--mode=page] [--enlarge-only="NAME;NAME2"]
+//        [--mode=page] [--enlarge-only="NAME;NAME2"] [--outcue=N] [--outcue-style=underline,bold]
 //
 // What this is: the same engine that runs inside the web page, run from the
 // command line on one PDF. The tests and the verifier (check.py) use it so
@@ -10,7 +10,9 @@
 // that report.
 // Also accepted: --mode=reader, --emit=elements | --emit=analyze (write reader-mode elements
 // as JSON instead of a PDF), --watermark-text="A|B" (text to treat as a
-// watermark, not script).
+// watermark, not script), --outcue=N (Reader mode: mark the last N words of
+// every speech; 0 = off) with --outcue-style=underline,bold (either or both;
+// default underline).
 // Exit codes: 0 ok; 3 the PDF is a scan with no real text layer; anything
 // else is a crash.
 import { createRequire } from 'module';
@@ -64,12 +66,17 @@ if (hlArg) {
 }
 // Defaults: enlarge all dialogue in place, no names singled out, no declared
 // watermark text, and write a PDF (not elements).
-let mode = 'dialogue', enlargeOnly = null, watermarkText = null, emit = null;
+let mode = 'dialogue', enlargeOnly = null, watermarkText = null, emit = null, outcueWords = 0, outcueStyle = null;
 for (const f of argv.filter(a => a.startsWith('--'))) {
   if (f === '--mode=page') mode = 'page';
   else if (f === '--mode=reader') mode = 'reader';
   else if (f === '--emit=elements') emit = 'elements';
   else if (f === '--emit=analyze') emit = 'analyze';
+  else if (f.startsWith('--outcue=')) outcueWords = parseInt(f.slice('--outcue='.length), 10) || 0;
+  else if (f.startsWith('--outcue-style=')) {
+    outcueStyle = {};
+    for (const s of f.slice('--outcue-style='.length).split(',')) if (s.trim()) outcueStyle[s.trim()] = true;
+  }
   else if (f.startsWith('--enlarge-only=')) {
     enlargeOnly = f.slice('--enlarge-only='.length).split(';').map(s => s.trim()).filter(Boolean);
   } else if (f.startsWith('--watermark-text=')) {
@@ -103,7 +110,7 @@ try {
     process.exit(0);
   }
   // Normal path: rewrite the PDF, and keep the report beside it for check.py.
-  const { bytes: out, report } = await engine.process(bytes, { scale, highlights, mode, enlargeOnly, watermarkText });
+  const { bytes: out, report } = await engine.process(bytes, { scale, highlights, mode, enlargeOnly, watermarkText, outcueWords, outcueStyle });
   fs.writeFileSync(outFile, out);
   fs.writeFileSync(outFile + '.report.json', JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));

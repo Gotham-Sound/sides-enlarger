@@ -45,6 +45,12 @@
   /* the controls rows: the size slider and the mode buttons (a segmented control) */
   .controls { display:flex; align-items:center; gap:16px; margin:20px 0 6px; flex-wrap:wrap; }
   .controls label { font-weight:600; }
+  /* Reader-mode options: the outcue marks, shown only while Reader mode is on */
+  .readerOpts { gap:12px; }
+  .readerOpts .optLabel { font-weight:600; }
+  .readerOpts label.chk { display:flex; align-items:center; gap:8px; cursor:pointer; font-weight:600; }
+  .readerOpts input { width:22px; height:22px; margin:0; }
+  .optHint { color:#8a8a8a; font-size:13px; }
   .seg { display:flex; border:1.5px solid var(--accent); border-radius:10px; overflow:hidden; }
   .seg button { padding:9px 14px; border:0; background:#fff; color:var(--accent); font-size:14px;
                 font-weight:600; cursor:pointer; border-right:1px solid var(--accentSoft); white-space:nowrap; }
@@ -240,6 +246,13 @@
       <button type="button" data-mode="reader">Reader mode</button>
     </div>
   </div>
+  <!-- Reader-mode options (v1.17.0): the outcue marks, off until ticked, Reader mode only -->
+  <div class="controls readerOpts" id="readerOpts" hidden>
+    <span class="optLabel">Mark the last five words of every speech (Reader mode only):</span>
+    <label class="chk"><input type="checkbox" id="outcueUnderline"> Underline</label>
+    <label class="chk"><input type="checkbox" id="outcueBold"> Bold</label>
+    <span class="optHint">So the end of a line is seen coming. Off unless you tick one.</span>
+  </div>
 
 
   <!-- status line, engine warnings, and the .sceneline reconcile banner -->
@@ -394,6 +407,9 @@ window.__bootSides__ = function (pdfjs) {
   delete prefs.hiddenChars; // retired (v1.16.1): nothing could set it, but old saves may carry it and it silently hid names
   prefs.manualNames = prefs.manualNames || []; // names the user typed in
   prefs.enlargeMode = prefs.enlargeMode || 'all';   // all | selected | page
+  // Reader mode: the outcue marks (v1.17.0), both off unless ticked (Peter's call)
+  if (prefs.readerOutcueUnderline == null) prefs.readerOutcueUnderline = false;
+  if (prefs.readerOutcueBold == null) prefs.readerOutcueBold = false;
   prefs.enlargeChars = prefs.enlargeChars || {};    // NAME -> true (selected mode)
 
   // the loaded PDF and the last output. 'busy' and 'queued' make sure only one
@@ -643,7 +659,21 @@ window.__bootSides__ = function (pdfjs) {
       btn.className = btn.getAttribute('data-mode') === prefs.enlargeMode ? 'on' : '';
     });
     previews.classList.toggle('readerMode', prefs.enlargeMode === 'reader');
+    document.getElementById('readerOpts').hidden = prefs.enlargeMode !== 'reader';
   }
+  // the Reader-mode checkboxes: persisted like the other settings, re-run the engine
+  var outcueUnderline = document.getElementById('outcueUnderline');
+  var outcueBold = document.getElementById('outcueBold');
+  outcueUnderline.checked = !!prefs.readerOutcueUnderline;
+  outcueBold.checked = !!prefs.readerOutcueBold;
+  function onOutcueChange() {
+    prefs.readerOutcueUnderline = outcueUnderline.checked;
+    prefs.readerOutcueBold = outcueBold.checked;
+    savePrefs(prefs);
+    scheduleProcess();
+  }
+  outcueUnderline.addEventListener('change', onOutcueChange);
+  outcueBold.addEventListener('change', onOutcueChange);
   // one click listener for every mode button: the button's data-mode says which
   document.getElementById('modeRow').addEventListener('click', function (e) {
     var m = e.target && e.target.getAttribute && e.target.getAttribute('data-mode');
@@ -949,7 +979,13 @@ window.__bootSides__ = function (pdfjs) {
     setTimeout(function () {
       var opts = { scale: s, highlights: activeHighlights() };
       if (prefs.enlargeMode === 'page') opts.mode = 'page';
-      else if (prefs.enlargeMode === 'reader') opts.mode = 'reader';
+      else if (prefs.enlargeMode === 'reader') {
+        opts.mode = 'reader';
+        if (prefs.readerOutcueUnderline || prefs.readerOutcueBold) { // the outcue marks (v1.17.0), off unless ticked
+          opts.outcueWords = 5;
+          opts.outcueStyle = { underline: !!prefs.readerOutcueUnderline, bold: !!prefs.readerOutcueBold };
+        }
+      }
       else if (prefs.enlargeMode === 'selected') {
         if (seededGen !== fileGen) { seededGen = fileGen; if (seedSelection()) renderRail(); }
         opts.enlargeOnly = tickedNames();
