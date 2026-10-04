@@ -45,6 +45,10 @@
   /* the controls rows: the size slider and the mode buttons (a segmented control) */
   .controls { display:flex; align-items:center; gap:16px; margin:20px 0 6px; flex-wrap:wrap; }
   .controls label { font-weight:600; }
+  /* Reader-mode options: one checkbox, shown only while Reader mode is on */
+  .readerOpts label.chk { display:flex; align-items:center; gap:10px; cursor:pointer; }
+  .readerOpts input { width:22px; height:22px; margin:0; }
+  .optHint { color:#8a8a8a; font-size:13px; }
   .seg { display:flex; border:1.5px solid var(--accent); border-radius:10px; overflow:hidden; }
   .seg button { padding:9px 14px; border:0; background:#fff; color:var(--accent); font-size:14px;
                 font-weight:600; cursor:pointer; border-right:1px solid var(--accentSoft); white-space:nowrap; }
@@ -240,6 +244,11 @@
       <button type="button" data-mode="reader">Reader mode</button>
     </div>
   </div>
+  <!-- Reader-mode options (v1.17.0): the outcue underline, on by default -->
+  <div class="controls readerOpts" id="readerOpts" hidden>
+    <label class="chk"><input type="checkbox" id="outcueChk" checked> Underline the last words</label>
+    <span class="optHint">The last five words of every speech, so the end is seen coming.</span>
+  </div>
 
 
   <!-- status line, engine warnings, and the .sceneline reconcile banner -->
@@ -394,6 +403,7 @@ window.__bootSides__ = function (pdfjs) {
   delete prefs.hiddenChars; // retired (v1.16.1): nothing could set it, but old saves may carry it and it silently hid names
   prefs.manualNames = prefs.manualNames || []; // names the user typed in
   prefs.enlargeMode = prefs.enlargeMode || 'all';   // all | selected | page
+  if (prefs.readerOutcue == null) prefs.readerOutcue = true; // Reader mode: underline the last words (v1.17.0)
   prefs.enlargeChars = prefs.enlargeChars || {};    // NAME -> true (selected mode)
 
   // the loaded PDF and the last output. 'busy' and 'queued' make sure only one
@@ -643,7 +653,16 @@ window.__bootSides__ = function (pdfjs) {
       btn.className = btn.getAttribute('data-mode') === prefs.enlargeMode ? 'on' : '';
     });
     previews.classList.toggle('readerMode', prefs.enlargeMode === 'reader');
+    document.getElementById('readerOpts').hidden = prefs.enlargeMode !== 'reader';
   }
+  // the Reader-mode checkbox: persisted like the other settings, re-runs the engine
+  var outcueChk = document.getElementById('outcueChk');
+  outcueChk.checked = prefs.readerOutcue !== false;
+  outcueChk.addEventListener('change', function () {
+    prefs.readerOutcue = outcueChk.checked;
+    savePrefs(prefs);
+    scheduleProcess();
+  });
   // one click listener for every mode button: the button's data-mode says which
   document.getElementById('modeRow').addEventListener('click', function (e) {
     var m = e.target && e.target.getAttribute && e.target.getAttribute('data-mode');
@@ -949,7 +968,10 @@ window.__bootSides__ = function (pdfjs) {
     setTimeout(function () {
       var opts = { scale: s, highlights: activeHighlights() };
       if (prefs.enlargeMode === 'page') opts.mode = 'page';
-      else if (prefs.enlargeMode === 'reader') opts.mode = 'reader';
+      else if (prefs.enlargeMode === 'reader') {
+        opts.mode = 'reader';
+        if (prefs.readerOutcue !== false) opts.outcueWords = 5; // the outcue underline (v1.17.0)
+      }
       else if (prefs.enlargeMode === 'selected') {
         if (seededGen !== fileGen) { seededGen = fileGen; if (seedSelection()) renderRail(); }
         opts.enlargeOnly = tickedNames();

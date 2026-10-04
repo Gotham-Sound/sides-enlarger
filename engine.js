@@ -2011,7 +2011,68 @@
     // full-width dialogue/action). Deliberately breaks page parity; every
     // page carries a footer saying so. Highlights paint as pastel strips
     // UNDER the text (we own the white background here).
-    async function renderReader(elements, requested, hlMap, report) {
+    // ---- the outcue: the last words of every speech (Sides Helper request,
+    // Peter's rulings 2026-10-04; v1.17.0) ----
+    // A speech is everything one character says before another character
+    // speaks: dialogue by the same speaker with no other speaker's cue or
+    // dialogue in between is ONE speech, across parentheticals, page breaks,
+    // action lines and a (CONT'D) cue; a new scene heading ends it. This
+    // mirrors Sides Helper's speakerBlock exactly, so the words the app
+    // underlines on screen are the words the PDF underlines. Words are the
+    // whitespace-separated tokens of the speech's dialogue elements joined
+    // with a space (so "--" and "..." count); parentheticals never count;
+    // a speech of n words or fewer is marked whole.
+    // Returns { speeches: [{ name, first, last, words, outcue }],
+    //           trailing: Map(elementIndex -> how many of that element's last
+    //           words belong to the outcue) }. n <= 0 means no marks at all.
+    function outcueMarks(elements, n) {
+      const els = elements || [];
+      const speeches = [], trailing = new Map();
+      if (!(n > 0)) return { speeches, trailing };
+      const isSpeech = e => e.t === 'dialogue' || e.t === 'cue' || e.t === 'paren';
+      const extend = (k, name, step) => {
+        let edge = k, j = k + step;
+        while (j >= 0 && j < els.length) {
+          const e = els[j];
+          if (isSpeech(e)) {
+            if ((e.name || '') === name) edge = j;
+            else if (e.t === 'cue' || e.t === 'dialogue') break; // someone else speaks
+          } else if (e.t === 'slug') break;                      // a new scene
+          j += step;
+        }
+        return edge;
+      };
+      const done = new Set();
+      for (let i = 0; i < els.length; i++) {
+        if (els[i].t !== 'dialogue' || done.has(i)) continue;
+        const name = els[i].name || '';
+        const first = extend(i, name, -1), last = extend(i, name, 1);
+        const members = [], counts = [], words = [];
+        for (let j = first; j <= last; j++) {
+          if (els[j].t !== 'dialogue' || (els[j].name || '') !== name) continue;
+          members.push(j); done.add(j);
+          const ws = String(els[j].text || '').split(/\s+/).filter(Boolean);
+          counts.push(ws.length); words.push(...ws);
+        }
+        const take = Math.min(Math.floor(n), words.length);
+        speeches.push({ name, first, last, words, outcue: words.slice(words.length - take) });
+        // hand the outcue back to its elements, from the last element backwards
+        let left = take;
+        for (let m = members.length - 1; m >= 0 && left > 0; m--) {
+          const c = Math.min(left, counts[m]);
+          if (c) trailing.set(members[m], c);
+          left -= c;
+        }
+      }
+      return { speeches, trailing };
+    }
+
+    // options (v1.17.0): { outcueWords } - underline the last N words of every
+    // speech (0 or absent = off; the output is then byte for byte what it was).
+    async function renderReader(elements, requested, hlMap, report, options) {
+      const outcueN = options && options.outcueWords > 0 ? Math.floor(options.outcueWords) : 0;
+      const marks = outcueMarks(elements, outcueN);
+      report.outcueWords = outcueN;
       const doc = await PDFLib.PDFDocument.create();
       const F = await doc.embedFont(PDFLib.StandardFonts.TimesRoman);
       const FB = await doc.embedFont(PDFLib.StandardFonts.TimesRomanBold);
@@ -2068,7 +2129,12 @@
       // ensure(): start a new page if h points would not fit. drawLines():
       // draw wrapped lines, optionally with a highlight strip behind them.
       const ensure = h => { if (y - h < BOT) newPage(); };
+      // opts2.underline (v1.17.0): how many words, counted from the END of this
+      // run of lines, carry the outcue underline. Drawn after the text in the
+      // text's own color (never a second color), a hair below the baseline.
       const drawLines = (lines, font, sz, opts2) => {
+        const totalWords = opts2.underline ? lines.reduce((n2, ln) => n2 + ln.split(' ').length, 0) : 0;
+        let seenWords = 0;
         for (const ln of lines) {
           ensure(lh);
           if (opts2.hl) {
@@ -2084,12 +2150,25 @@
           const tw = font.widthOfTextAtSize(ln, sz);
           const x = opts2.align === 'center' ? (W - tw) / 2 : (opts2.align === 'right' ? W - MX - tw : MX);
           page.drawText(ln, { x, y: y - lh + sz * 0.32, size: sz, font });
+          if (opts2.underline) {
+            const words = ln.split(' ');
+            const j = Math.max(0, (totalWords - opts2.underline) - seenWords); // first marked word on this line
+            if (j < words.length) {
+              // the text is drawn as one string, so a word's x is the width of what precedes it
+              const lead = j ? font.widthOfTextAtSize(words.slice(0, j).join(' ') + ' ', sz) : 0;
+              const uy = y - lh + sz * 0.32 - sz * 0.11;
+              page.drawLine({ start: { x: x + lead, y: uy }, end: { x: x + tw, y: uy },
+                thickness: Math.max(0.5, sz * 0.05), color: PDFLib.rgb(0, 0, 0) });
+            }
+            seenWords += words.length;
+          }
           y -= lh;
         }
       };
       const rgbOf = i => PDFLib.rgb(PALETTE[i].rgb[0], PALETTE[i].rgb[1], PALETTE[i].rgb[2]);
       report.readerBreaks = [];
-      for (const el of elements) {
+      for (let ei = 0; ei < elements.length; ei++) {
+        const el = elements[ei];
         const text = sanitize(el.text);
         const hlIdx = el.name != null && hlMap[el.name] != null ? hlMap[el.name] : null;
         const hl = hlIdx != null ? rgbOf(hlIdx) : null;
@@ -2140,7 +2219,7 @@
             drawLines(wrap(text, FI, size, colW * 0.8), FI, size, { align: 'center', hl });
             break;
           case 'dialogue':
-            drawLines(wrap(text, F, size, colW), F, size, { hl });
+            drawLines(wrap(text, F, size, colW), F, size, { hl, underline: marks.trailing.get(ei) || 0 });
             break;
           case 'transition':
             y -= lh * 0.3;
@@ -2465,7 +2544,7 @@
           report.elements = elements.length;
           return { elements, report };
         }
-        const readerBytes = await renderReader(elements, requested, hl, report);
+        const readerBytes = await renderReader(elements, requested, hl, report, { outcueWords: opts.outcueWords });
         return { bytes: readerBytes, report };
       }
 
@@ -2940,22 +3019,27 @@
     async function reader(bytes, opts = {}) {
       return process(bytes, { highlights: opts.highlights, watermarkText: opts.watermarkText, mode: 'reader', emit: 'elements' });
     }
-    // renderReaderPdf(elements, scale, highlights) -> Uint8Array: the Reader
-    // PDF from an element stream reader() returned (or a subset of it).
-    async function renderReaderPdf(elements, scale, highlights, stamps) {
+    // renderReaderPdf(elements, scale, highlights, options) -> Uint8Array: the
+    // Reader PDF from an element stream reader() returned (or a subset of it).
+    // options: { outcueWords: N (underline the last N words of every speech;
+    // 0 or absent = off, output byte for byte as before), stamps: [text] (the
+    // recipient watermark text for every footer, report.readerStamps from the
+    // analysis that produced the elements) }. A bare array in the 4th place is
+    // still read as the stamps list (the shape before v1.17.0).
+    async function renderReaderPdf(elements, scale, highlights, options) {
+      const stamps = Array.isArray(options) ? options : (options && options.stamps) || [];
+      const outcueWords = Array.isArray(options) ? 0 : (options && options.outcueWords) || 0;
       const requested = Math.min(1.5, Math.max(1.0, scale || 1.25));
       const hl = {};
       for (const k of Object.keys(highlights || {})) {
         const idx = highlights[k]; const n = normalizeCueName(k);
         if (n && idx != null && PALETTE[idx]) hl[n] = idx;
       }
-      // stamps: the recipient watermark text(s) to carry in every footer
-      // (report.readerStamps from the analysis that produced the elements)
-      return renderReader(elements, requested, hl, { readerBreaks: [], readerStamps: [].concat(stamps || []) });
+      return renderReader(elements, requested, hl, { readerBreaks: [], readerStamps: [].concat(stamps || []) }, { outcueWords });
     }
 
     return {
-      process, extract, analyze, reader, renderReaderPdf, PALETTE,
+      process, extract, analyze, reader, renderReaderPdf, outcueMarks, PALETTE,
       // .sceneline interchange (spec v2)
       parseSceneline, unionShows, reconcile, buildSidesBlock, buildScenelineExport, normalizeCueName,
       // the shared name gate on a normalized name, and the compiled scriptparse

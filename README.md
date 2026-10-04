@@ -62,7 +62,10 @@ same-page-count rule:
   begins, a gray "SCRIPT PAGE
   34" rule is drawn inline, so when someone on set calls a page you can still
   find it. Every reader page carries a footer reminding you the new page
-  numbers do not match the shooting script. Highlights work here too.
+  numbers do not match the shooting script. Highlights work here too. The
+  last five words of every speech are underlined, so the end of a line is
+  seen coming; untick **Underline the last words** (shown under the mode
+  buttons in Reader mode) to turn that off.
 
 ### Highlighting your lines
 After a PDF loads, a **"Highlight characters"** panel lists every speaking

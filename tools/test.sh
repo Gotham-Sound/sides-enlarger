@@ -77,6 +77,14 @@ fi
 
 # The core promise, on the synthetic script: every page stays identical
 # except that dialogue grows by exactly the requested amount.
+# The outcue underline (v1.17.0): the last five words of every speech in a
+# Reader PDF carry an underline and nothing else does. tools/check_outcue.py
+# rebuilds the speeches from the element stream and reads the underlines back
+# out of the PDF's drawings. $1 = elements JSON, $2 = reader PDF, $3 = label.
+check_outcue() {
+  if python3 tools/check_outcue.py "$1" "$2" 5; then echo "    [$3] PASS"; else echo "    [$3] FAIL"; fail=1; fi
+}
+
 echo "==> testing fixture"
 run_one out/fixture.pdf fixture
 
@@ -245,9 +253,12 @@ check_one out/fixture.pdf out/fixture.page.pdf "page mode @ 1.5" "$RENDER_DIR/fi
 # Reader mode, the one mode allowed to reflow: proves no word is lost or
 # invented, the size is right, and the call sheet is left out entirely.
 echo "==> fixture: reader mode"
-node tools/run_engine_node.mjs out/fixture.pdf out/fixture.reader.pdf 1.25 'LAURA=0' --mode=reader \
+node tools/run_engine_node.mjs out/fixture.pdf out/fixture.reader.pdf 1.25 'LAURA=0' --mode=reader --outcue=5 \
   >/dev/null 2>out/fixture.reader.err || { echo "    [reader mode] ENGINE ERROR:"; cat out/fixture.reader.err; fail=1; }
 check_one out/fixture.pdf out/fixture.reader.pdf "reader mode @ 1.25" "$RENDER_DIR/fixture_reader"
+node tools/run_engine_node.mjs out/fixture.pdf out/fixture.elements.json 1.25 'LAURA=0' --emit=elements \
+  >/dev/null 2>out/fixture.elements.err || { echo "    [outcue: fixture] ENGINE ERROR (elements):"; cat out/fixture.elements.err; fail=1; }
+check_outcue out/fixture.elements.json out/fixture.reader.pdf "outcue: fixture"
 python3 - <<'PY' && echo "    [reader skips the call sheet] PASS" || { echo "    [reader skips the call sheet] FAIL"; fail=1; }
 import fitz, json
 doc = fitz.open("out/fixture.reader.pdf")
@@ -343,9 +354,12 @@ assert any("Prepared for J. Doe" == b["text"] for b in rep.get("burnIns", [])), 
 assert any("burn-in" in w.lower() for w in rep.get("warnings", [])), "no never-silent burn-in warning"
 PY
 check_one out/fixture_burnin.pdf out/fixture_burnin.out.pdf "burn-in: geometry parity" "$RENDER_DIR/fixture_burnin"
-node tools/run_engine_node.mjs out/fixture_burnin.pdf out/fixture_burnin.reader.pdf 1.25 'LAURA=0' --mode=reader \
+node tools/run_engine_node.mjs out/fixture_burnin.pdf out/fixture_burnin.reader.pdf 1.25 'LAURA=0' --mode=reader --outcue=5 \
   >/dev/null 2>out/fixture_burnin.reader.err || { echo "    [burn-in reader] ENGINE ERROR:"; cat out/fixture_burnin.reader.err; fail=1; }
 check_one out/fixture_burnin.pdf out/fixture_burnin.reader.pdf "burn-in: reader parity" "$RENDER_DIR/fixture_burnin_reader"
+node tools/run_engine_node.mjs out/fixture_burnin.pdf out/fixture_burnin.elements.json 1.25 'LAURA=0' --emit=elements \
+  >/dev/null 2>out/fixture_burnin.elements.err || { echo "    [outcue: burn-in] ENGINE ERROR (elements):"; cat out/fixture_burnin.elements.err; fail=1; }
+check_outcue out/fixture_burnin.elements.json out/fixture_burnin.reader.pdf "outcue: burn-in"
 python3 - <<'PY' && echo "    [burn-in: stamp in every reader footer, never in the text] PASS" || { echo "    [burn-in: reader stamp] FAIL"; fail=1; }
 import fitz, json
 rep = json.load(open("out/fixture_burnin.reader.pdf.report.json"))
@@ -365,10 +379,13 @@ PY
 echo "==> fixture (multi-episode): dialogue / whole-page / reader"
 run_one out/fixture_multi.pdf fixture_multi
 for m in page reader; do
-  node tools/run_engine_node.mjs out/fixture_multi.pdf "out/fixture_multi.$m.pdf" 1.25 'VOIGHT=0' --mode=$m \
+  node tools/run_engine_node.mjs out/fixture_multi.pdf "out/fixture_multi.$m.pdf" 1.25 'VOIGHT=0' --mode=$m --outcue=5 \
     >/dev/null 2>"out/fixture_multi.$m.err" || { echo "    [multi $m] ENGINE ERROR:"; cat "out/fixture_multi.$m.err"; fail=1; continue; }
   check_one out/fixture_multi.pdf "out/fixture_multi.$m.pdf" "multi $m @ 1.25" "$RENDER_DIR/fixture_multi_$m"
 done
+node tools/run_engine_node.mjs out/fixture_multi.pdf out/fixture_multi.elements.json 1.25 'VOIGHT=0' --emit=elements \
+  >/dev/null 2>out/fixture_multi.elements.err || { echo "    [outcue: multi] ENGINE ERROR (elements):"; cat out/fixture_multi.elements.err; fail=1; }
+check_outcue out/fixture_multi.elements.json out/fixture_multi.reader.pdf "outcue: multi"
 echo "==> fixture (multi-episode): header is furniture, not body text"
 python3 - <<'PY' && echo "    [multi header/label] PASS" || { echo "    [multi header/label] FAIL"; fail=1; }
 import json, re, sys, fitz
@@ -444,6 +461,17 @@ fi
 
 # The Netflix sides-link rewrite is a pure text change: proves it recognises
 # only that one host and leaves every other link alone. No network is used.
+# The outcue tokenizer: the words the PDF underlines must be the words Sides
+# Helper's CueSheet shows (same speaker until another speaks, across parens,
+# page breaks, action and a CONT'D cue; parens never count; short speeches whole).
+echo "==> outcue tokenizer (matches Sides Helper's speech rule)"
+if node tools/test_outcue.mjs 2>/dev/null | tee out/outcue.out | grep -q '^OUTCUE: all'; then
+  grep '    \[' out/outcue.out
+else
+  grep '    \[' out/outcue.out || true
+  echo "    [outcue] FAIL"; fail=1
+fi
+
 echo "==> studio sides-link rewrite (pure, no network)"
 if node tools/test_links.mjs 2>/dev/null | tee /tmp/links.out | grep -q '^LINKS: all'; then
   grep '    \[' /tmp/links.out

@@ -47,6 +47,8 @@ tools/run_engine_node.mjs  Runs engine.js headless on a PDF (uses node_modules b
 tools/check.py          Independent verifier (pymupdf) + side-by-side page renders.
 tools/test_sceneline.mjs  Headless acceptance tests for the .sceneline interchange.
 tools/test_links.mjs    Unit test for the studio sides-link rewrite (made-up tokens only).
+tools/test_outcue.mjs   Unit test for the Reader-mode outcue tokenizer (mirrors Sides Helper's speech rule).
+tools/check_outcue.py   Independent check of the outcue underline in a Reader PDF (pymupdf).
 tools/conformance_check.mjs  Inverted-verification runner for the hub's conformance corpus (scriptparse #40).
 tools/test.sh           One-shot: fixture (and optional real PDFs) at 1.0/1.25/1.5.
 docs/sceneline-interchange-v2.md  The .sceneline interchange spec (committed, no script text).
@@ -199,6 +201,27 @@ renderer re-segmenting enlarged lines). It also writes
   reading text. Footer, not a diagonal re-draw, by Peter's call: it respects
   reader mode's clean page, and the diagonal is the escalation if a studio
   asks for more; it would replace that one helper.
+  **The outcue underline (v1.17.0; Sides Helper request, Peter's rulings
+  2026-10-04):** the last five words of every speech are underlined, in the
+  text color, a hair under the baseline, drawn after the text so it reads over
+  a highlight strip. The unit is the SPEECH as Sides Helper's `speakerBlock`
+  defines it, mirrored word for word in `outcueMarks(elements, n)` (pure,
+  exported): dialogue by one speaker with no other speaker's cue or dialogue
+  between is one speech, across parentheticals, page breaks, action lines and
+  a (CONT'D) cue; a slug ends it; words are whitespace tokens of the dialogue
+  elements joined (so `--` and `...` count); parentheticals never count; five
+  words or fewer is marked whole. `renderReaderPdf(elements, scale,
+  highlights, options)` takes `{ outcueWords, stamps }` (a bare array in 4th
+  place is still the legacy stamps list); with no `outcueWords` the output is
+  byte for byte what it was, modulo pdf-lib's creation/modification dates,
+  which it stamps on every fresh document. `process()` takes
+  `opts.outcueWords`; the UI sends 5 while its "Underline the last words"
+  checkbox (Reader mode only, on by default, persisted as `prefs.readerOutcue`)
+  is ticked. The element stream is unchanged. Verified by
+  `tools/check_outcue.py` (rebuilds the speeches from `--emit=elements` and
+  reads the underlines back out of the PDF drawings: every expected word
+  underlined, nothing else, no stray line) on all three fixtures, and
+  `tools/test_outcue.mjs` (the tokenizer cases).
 - **Highlighting**: one rounded rect per block of an assigned character,
   painted as a Multiply-blend fill in a content stream APPENDED after the page
   content (so white background fills inside forms can't hide it; glyphs stay
