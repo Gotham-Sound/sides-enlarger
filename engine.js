@@ -2067,12 +2067,19 @@
       return { speeches, trailing };
     }
 
-    // options (v1.17.0): { outcueWords } - underline the last N words of every
-    // speech (0 or absent = off; the output is then byte for byte what it was).
+    // options (v1.17.0): { outcueWords, outcueStyle } - mark the last N words of
+    // every speech (0 or absent = off; the output is then byte for byte what it
+    // was). outcueStyle = { underline, bold }, independent, both allowed; a
+    // count with no style means the underline (the original ruling). Off by
+    // default everywhere (Peter, 2026-10-04).
     async function renderReader(elements, requested, hlMap, report, options) {
       const outcueN = options && options.outcueWords > 0 ? Math.floor(options.outcueWords) : 0;
       const marks = outcueMarks(elements, outcueN);
+      const style = { underline: true, bold: false };
+      if (options && options.outcueStyle) { style.underline = !!options.outcueStyle.underline; style.bold = !!options.outcueStyle.bold; }
+      if (outcueN && !style.underline && !style.bold) style.underline = true;
       report.outcueWords = outcueN;
+      report.outcueStyle = outcueN ? style : null;
       const doc = await PDFLib.PDFDocument.create();
       const F = await doc.embedFont(PDFLib.StandardFonts.TimesRoman);
       const FB = await doc.embedFont(PDFLib.StandardFonts.TimesRomanBold);
@@ -2129,13 +2136,23 @@
       // ensure(): start a new page if h points would not fit. drawLines():
       // draw wrapped lines, optionally with a highlight strip behind them.
       const ensure = h => { if (y - h < BOT) newPage(); };
-      // opts2.underline (v1.17.0): how many words, counted from the END of this
-      // run of lines, carry the outcue underline. Drawn after the text in the
-      // text's own color (never a second color), below the descenders so g, y
-      // and p do not cross it, and heavy enough to read at a glance on a phone
-      // (about 1.4pt under 15pt type; a hairline there was too faint).
+      // opts2.mark (v1.17.0): { count, underline, bold, boldFont }: the last
+      // `count` words of this run of lines are the outcue. Bold sets them in
+      // the bold face (the line is drawn as a roman prefix and a bold suffix);
+      // underline draws a line under them after the text, in the text's own
+      // color (never a second color), below the descenders so g, y and p do
+      // not cross it, heavy enough to read at a glance on a phone (about 1.4pt
+      // under 15pt type). With no mark the drawing is exactly what it was.
+      // The width of text AS DRAWN. pdf-lib's widthOfTextAtSize applies the
+      // font's kerning pairs, but drawText emits plain glyph runs with no
+      // kerning, so the measured width runs 1-4pt short of the drawn width on
+      // a line of dialogue. Harmless for wrapping (lines come out a hair
+      // long), but a second run placed on the same line, or an underline's
+      // end, must use the sum of the glyph advances or it lands early.
+      const advance = (font, text, sz) => { let w = 0; for (const ch of text) w += font.widthOfTextAtSize(ch, sz); return w; };
       const drawLines = (lines, font, sz, opts2) => {
-        const totalWords = opts2.underline ? lines.reduce((n2, ln) => n2 + ln.split(' ').length, 0) : 0;
+        const mark = opts2.mark && opts2.mark.count > 0 ? opts2.mark : null;
+        const totalWords = mark ? lines.reduce((n2, ln) => n2 + ln.split(' ').length, 0) : 0;
         let seenWords = 0;
         for (const ln of lines) {
           ensure(lh);
@@ -2151,21 +2168,50 @@
           }
           const tw = font.widthOfTextAtSize(ln, sz);
           const x = opts2.align === 'center' ? (W - tw) / 2 : (opts2.align === 'right' ? W - MX - tw : MX);
-          page.drawText(ln, { x, y: y - lh + sz * 0.32, size: sz, font });
-          if (opts2.underline) {
-            const words = ln.split(' ');
-            const j = Math.max(0, (totalWords - opts2.underline) - seenWords); // first marked word on this line
-            if (j < words.length) {
-              // the text is drawn as one string, so a word's x is the width of what precedes it
-              const lead = j ? font.widthOfTextAtSize(words.slice(0, j).join(' ') + ' ', sz) : 0;
-              const uy = y - lh + sz * 0.32 - sz * 0.28;
-              page.drawLine({ start: { x: x + lead, y: uy }, end: { x: x + tw, y: uy },
-                thickness: Math.max(0.8, sz * 0.09), color: PDFLib.rgb(0, 0, 0) });
-            }
-            seenWords += words.length;
+          const base = y - lh + sz * 0.32;
+          if (!mark) { page.drawText(ln, { x, y: base, size: sz, font }); y -= lh; continue; }
+          const words = ln.split(' ');
+          const j = Math.max(0, (totalWords - mark.count) - seenWords); // first marked word on this line
+          seenWords += words.length;
+          if (j >= words.length) { page.drawText(ln, { x, y: base, size: sz, font }); y -= lh; continue; }
+          // a word's x is the width of what precedes it, drawn as one string
+          const prefix = words.slice(0, j).join(' '), suffix = words.slice(j).join(' ');
+          const lead = j ? advance(font, prefix + ' ', sz) : 0;
+          let lineW = advance(font, ln, sz);
+          if (mark.bold) {
+            // the prefix keeps its trailing space so the text layer (copy, search,
+            // the verifier) sees two words, not one glued across the font change
+            if (j) page.drawText(prefix + ' ', { x, y: base, size: sz, font });
+            page.drawText(suffix, { x: x + lead, y: base, size: sz, font: mark.boldFont });
+            lineW = lead + advance(mark.boldFont, suffix, sz);
+          } else page.drawText(ln, { x, y: base, size: sz, font });
+          if (mark.underline) {
+            const uy = base - sz * 0.28;
+            page.drawLine({ start: { x: x + lead, y: uy }, end: { x: x + lineW, y: uy },
+              thickness: Math.max(0.8, sz * 0.09), color: PDFLib.rgb(0, 0, 0) });
           }
           y -= lh;
         }
+      };
+      // wrap for a dialogue element whose last words are set in bold: the bold
+      // run is wider than the same words in roman, so each line is measured the
+      // way it will be drawn (roman prefix, a space, bold suffix) or a full line
+      // could run past the margin. Greedy, like wrap(); a lone word always fits.
+      const wrapMarked = (text, font, boldFont, sz, width, firstMarked) => {
+        const words = text.split(' ');
+        const measure = (a, b) => { // as drawn: see advance()
+          const m = Math.min(Math.max(firstMarked, a), b);
+          const roman = words.slice(a, m).join(' '), bold = words.slice(m, b).join(' ');
+          if (!bold) return advance(font, roman, sz);
+          if (!roman) return advance(boldFont, bold, sz);
+          return advance(font, roman + ' ', sz) + advance(boldFont, bold, sz);
+        };
+        const out = []; let a = 0;
+        for (let b = 2; b <= words.length; b++) {
+          if (b > a + 1 && measure(a, b) > width) { out.push(words.slice(a, b - 1).join(' ')); a = b - 1; }
+        }
+        out.push(words.slice(a).join(' '));
+        return out;
       };
       const rgbOf = i => PDFLib.rgb(PALETTE[i].rgb[0], PALETTE[i].rgb[1], PALETTE[i].rgb[2]);
       report.readerBreaks = [];
@@ -2220,9 +2266,13 @@
           case 'paren':
             drawLines(wrap(text, FI, size, colW * 0.8), FI, size, { align: 'center', hl });
             break;
-          case 'dialogue':
-            drawLines(wrap(text, F, size, colW), F, size, { hl, underline: marks.trailing.get(ei) || 0 });
+          case 'dialogue': {
+            const k = marks.trailing.get(ei) || 0; // this element's share of its speech's outcue
+            if (!k) { drawLines(wrap(text, F, size, colW), F, size, { hl }); break; }
+            const lines = style.bold ? wrapMarked(text, F, FB, size, colW, text.split(' ').length - k) : wrap(text, F, size, colW);
+            drawLines(lines, F, size, { hl, mark: { count: k, underline: style.underline, bold: style.bold, boldFont: FB } });
             break;
+          }
           case 'transition':
             y -= lh * 0.3;
             drawLines(wrap(text, F, size, colW), F, size, { align: 'right' });
@@ -2546,7 +2596,7 @@
           report.elements = elements.length;
           return { elements, report };
         }
-        const readerBytes = await renderReader(elements, requested, hl, report, { outcueWords: opts.outcueWords });
+        const readerBytes = await renderReader(elements, requested, hl, report, { outcueWords: opts.outcueWords, outcueStyle: opts.outcueStyle });
         return { bytes: readerBytes, report };
       }
 
@@ -3023,21 +3073,23 @@
     }
     // renderReaderPdf(elements, scale, highlights, options) -> Uint8Array: the
     // Reader PDF from an element stream reader() returned (or a subset of it).
-    // options: { outcueWords: N (underline the last N words of every speech;
-    // 0 or absent = off, output byte for byte as before), stamps: [text] (the
+    // options: { outcueWords: N (mark the last N words of every speech; 0 or
+    // absent = off, output byte for byte as before), outcueStyle: { underline,
+    // bold } (independent; absent = underline), stamps: [text] (the
     // recipient watermark text for every footer, report.readerStamps from the
     // analysis that produced the elements) }. A bare array in the 4th place is
     // still read as the stamps list (the shape before v1.17.0).
     async function renderReaderPdf(elements, scale, highlights, options) {
       const stamps = Array.isArray(options) ? options : (options && options.stamps) || [];
       const outcueWords = Array.isArray(options) ? 0 : (options && options.outcueWords) || 0;
+      const outcueStyle = Array.isArray(options) ? null : (options && options.outcueStyle) || null;
       const requested = Math.min(1.5, Math.max(1.0, scale || 1.25));
       const hl = {};
       for (const k of Object.keys(highlights || {})) {
         const idx = highlights[k]; const n = normalizeCueName(k);
         if (n && idx != null && PALETTE[idx]) hl[n] = idx;
       }
-      return renderReader(elements, requested, hl, { readerBreaks: [], readerStamps: [].concat(stamps || []) }, { outcueWords });
+      return renderReader(elements, requested, hl, { readerBreaks: [], readerStamps: [].concat(stamps || []) }, { outcueWords, outcueStyle });
     }
 
     return {

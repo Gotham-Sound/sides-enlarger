@@ -201,26 +201,32 @@ renderer re-segmenting enlarged lines). It also writes
   reading text. Footer, not a diagonal re-draw, by Peter's call: it respects
   reader mode's clean page, and the diagonal is the escalation if a studio
   asks for more; it would replace that one helper.
-  **The outcue underline (v1.17.0; Sides Helper request, Peter's rulings
-  2026-10-04):** the last five words of every speech are underlined, in the
-  text color, a hair under the baseline, drawn after the text so it reads over
-  a highlight strip. The unit is the SPEECH as Sides Helper's `speakerBlock`
+  **The outcue marks (v1.17.0; Sides Helper request, Peter's rulings
+  2026-10-04, amended the same day):** the last five words of every speech can
+  be marked with an underline (text color, heavy, below the descenders, drawn
+  after the text so it reads over a highlight strip) and/or set in bold (the
+  line is drawn as a roman prefix plus a bold suffix, wrapped with mixed-font
+  measurement by `wrapMarked` so a full line never runs past the margin).
+  Both OFF by default, Reader mode only, and the control's label says so
+  ("Mark the last five words of every speech (Reader mode only)"). The unit is the SPEECH as Sides Helper's `speakerBlock`
   defines it, mirrored word for word in `outcueMarks(elements, n)` (pure,
   exported): dialogue by one speaker with no other speaker's cue or dialogue
   between is one speech, across parentheticals, page breaks, action lines and
   a (CONT'D) cue; a slug ends it; words are whitespace tokens of the dialogue
   elements joined (so `--` and `...` count); parentheticals never count; five
   words or fewer is marked whole. `renderReaderPdf(elements, scale,
-  highlights, options)` takes `{ outcueWords, stamps }` (a bare array in 4th
-  place is still the legacy stamps list); with no `outcueWords` the output is
-  byte for byte what it was, modulo pdf-lib's creation/modification dates,
-  which it stamps on every fresh document. `process()` takes
-  `opts.outcueWords`; the UI sends 5 while its "Underline the last words"
-  checkbox (Reader mode only, on by default, persisted as `prefs.readerOutcue`)
-  is ticked. The element stream is unchanged. Verified by
-  `tools/check_outcue.py` (rebuilds the speeches from `--emit=elements` and
-  reads the underlines back out of the PDF drawings: every expected word
-  underlined, nothing else, no stray line) on all three fixtures, and
+  highlights, options)` takes `{ outcueWords, outcueStyle: { underline, bold },
+  stamps }` (a bare array in 4th place is still the legacy stamps list; a count
+  with no style means the underline, the original ruling); with no
+  `outcueWords` the output is byte for byte what it was, modulo pdf-lib's
+  creation/modification dates, which it stamps on every fresh document.
+  `process()` takes `opts.outcueWords` + `opts.outcueStyle`; the UI sends 5 and
+  the two ticks (`prefs.readerOutcueUnderline` / `prefs.readerOutcueBold`,
+  both default false). The element stream is unchanged. Verified by
+  `tools/check_outcue.py` (rebuilds the speeches from `--emit=elements`, reads
+  underlines back out of the PDF drawings and bold out of the span fonts at
+  body size: every expected word carries exactly the marks asked for, nothing
+  else does, no stray line) across the three fixtures in all three styles, and
   `tools/test_outcue.mjs` (the tokenizer cases).
 - **Highlighting**: one rounded rect per block of an assigned character,
   painted as a Multiply-blend fill in a content stream APPENDED after the page
