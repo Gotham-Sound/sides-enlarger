@@ -77,11 +77,11 @@ fi
 
 # The core promise, on the synthetic script: every page stays identical
 # except that dialogue grows by exactly the requested amount.
-# The outcue marks (v1.17.0): the last five words of every speech in a Reader
-# PDF carry the mark(s) asked for (underline, bold or both) and nothing else
+# The outcue marks (v1.17.0, v1.18.0): the last five words of every speech in a
+# Reader PDF carry the mark(s) asked for (underline, bold, lastWord) and nothing else
 # does. tools/check_outcue.py rebuilds the speeches from the element stream and
 # reads the marks back out of the PDF. $1 = elements JSON, $2 = reader PDF,
-# $3 = label, $4 = style (underline | bold | both; default underline).
+# $3 = label, $4 = style (comma list of underline, bold, lastWord; default underline).
 check_outcue() {
   if python3 tools/check_outcue.py "$1" "$2" 5 "${4:-underline}"; then echo "    [$3] PASS"; else echo "    [$3] FAIL"; fail=1; fi
 }
@@ -254,12 +254,12 @@ check_one out/fixture.pdf out/fixture.page.pdf "page mode @ 1.5" "$RENDER_DIR/fi
 # Reader mode, the one mode allowed to reflow: proves no word is lost or
 # invented, the size is right, and the call sheet is left out entirely.
 echo "==> fixture: reader mode"
-node tools/run_engine_node.mjs out/fixture.pdf out/fixture.reader.pdf 1.25 'LAURA=0' --mode=reader --outcue=5 --outcue-style=underline,bold \
+node tools/run_engine_node.mjs out/fixture.pdf out/fixture.reader.pdf 1.25 'LAURA=0' --mode=reader --outcue=5 --outcue-style=underline,bold,lastWord \
   >/dev/null 2>out/fixture.reader.err || { echo "    [reader mode] ENGINE ERROR:"; cat out/fixture.reader.err; fail=1; }
 check_one out/fixture.pdf out/fixture.reader.pdf "reader mode @ 1.25" "$RENDER_DIR/fixture_reader"
 node tools/run_engine_node.mjs out/fixture.pdf out/fixture.elements.json 1.25 'LAURA=0' --emit=elements \
   >/dev/null 2>out/fixture.elements.err || { echo "    [outcue: fixture] ENGINE ERROR (elements):"; cat out/fixture.elements.err; fail=1; }
-check_outcue out/fixture.elements.json out/fixture.reader.pdf "outcue: fixture (underline + bold)" both
+check_outcue out/fixture.elements.json out/fixture.reader.pdf "outcue: fixture (underline + bold + last word)" underline,bold,lastWord
 python3 - <<'PY' && echo "    [reader skips the call sheet] PASS" || { echo "    [reader skips the call sheet] FAIL"; fail=1; }
 import fitz, json
 doc = fitz.open("out/fixture.reader.pdf")
@@ -294,9 +294,12 @@ check_one out/fixture_wm.pdf out/fixture_wm.out.pdf "watermark: geometry parity"
 # reader mode drops the rotated stamp from the reading text and carries its
 # words in every reader page's footer instead (the recipient's watermark
 # survives the reflow); the report lists what it carried
-node tools/run_engine_node.mjs out/fixture_wm.pdf out/fixture_wm.reader.pdf 1.25 'LAURA=0' --mode=reader \
+node tools/run_engine_node.mjs out/fixture_wm.pdf out/fixture_wm.reader.pdf 1.25 'LAURA=0' --mode=reader --outcue=5 --outcue-style=lastWord \
   >/dev/null 2>out/fixture_wm.reader.err || { echo "    [watermark reader] ENGINE ERROR:"; cat out/fixture_wm.reader.err; fail=1; }
 check_one out/fixture_wm.pdf out/fixture_wm.reader.pdf "watermark: reader parity + footer stamp" "$RENDER_DIR/fixture_wm_reader"
+node tools/run_engine_node.mjs out/fixture_wm.pdf out/fixture_wm.elements.json 1.25 'LAURA=0' --emit=elements \
+  >/dev/null 2>out/fixture_wm.elements.err || { echo "    [outcue: watermark] ENGINE ERROR (elements):"; cat out/fixture_wm.elements.err; fail=1; }
+check_outcue out/fixture_wm.elements.json out/fixture_wm.reader.pdf "outcue: watermark (last word only)" lastWord
 python3 - <<'PY' && echo "    [watermark: stamp in every reader footer, never in the text] PASS" || { echo "    [watermark: reader stamp] FAIL"; fail=1; }
 import fitz, json
 rep = json.load(open("out/fixture_wm.reader.pdf.report.json"))
@@ -380,13 +383,13 @@ PY
 echo "==> fixture (multi-episode): dialogue / whole-page / reader"
 run_one out/fixture_multi.pdf fixture_multi
 for m in page reader; do
-  node tools/run_engine_node.mjs out/fixture_multi.pdf "out/fixture_multi.$m.pdf" 1.25 'VOIGHT=0' --mode=$m --outcue=5 --outcue-style=bold \
+  node tools/run_engine_node.mjs out/fixture_multi.pdf "out/fixture_multi.$m.pdf" 1.25 'VOIGHT=0' --mode=$m --outcue=5 --outcue-style=bold,lastWord \
     >/dev/null 2>"out/fixture_multi.$m.err" || { echo "    [multi $m] ENGINE ERROR:"; cat "out/fixture_multi.$m.err"; fail=1; continue; }
   check_one out/fixture_multi.pdf "out/fixture_multi.$m.pdf" "multi $m @ 1.25" "$RENDER_DIR/fixture_multi_$m"
 done
 node tools/run_engine_node.mjs out/fixture_multi.pdf out/fixture_multi.elements.json 1.25 'VOIGHT=0' --emit=elements \
   >/dev/null 2>out/fixture_multi.elements.err || { echo "    [outcue: multi] ENGINE ERROR (elements):"; cat out/fixture_multi.elements.err; fail=1; }
-check_outcue out/fixture_multi.elements.json out/fixture_multi.reader.pdf "outcue: multi (bold)" bold
+check_outcue out/fixture_multi.elements.json out/fixture_multi.reader.pdf "outcue: multi (bold + last word)" bold,lastWord
 echo "==> fixture (multi-episode): header is furniture, not body text"
 python3 - <<'PY' && echo "    [multi header/label] PASS" || { echo "    [multi header/label] FAIL"; fail=1; }
 import json, re, sys, fitz

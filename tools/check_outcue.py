@@ -2,7 +2,8 @@
 """Verify the outcue underline in a Reader-mode PDF (v1.17.0).
 
 Usage: python3 tools/check_outcue.py <elements.json> <reader.pdf> <words> [style]
-       style = underline (default) | bold | both
+       style = a comma list of underline, bold, lastWord (default underline;
+       "both" still means underline,bold)
 
 The engine marks the last <words> words of every speech in Reader mode with
 an underline, bold type, or both. This script checks that independently of
@@ -29,8 +30,16 @@ import sys
 import fitz  # pymupdf
 
 
+def loud_word(words):
+    """The speech's last token with a letter or digit in it (None if none)."""
+    for w in reversed(words):
+        if any(c.isalnum() for c in w):
+            return w
+    return None
+
+
 def speeches(els, n):
-    """The outcue (last n words) of every speech in element order."""
+    """The outcue (last n words) of every speech in element order, and its loud word."""
     def is_speech(e):
         return e["t"] in ("dialogue", "cue", "paren")
 
@@ -59,7 +68,7 @@ def speeches(els, n):
             if els[j]["t"] == "dialogue" and (els[j].get("name") or "") == name:
                 seen.add(j)
                 words += els[j]["text"].split()
-        out.append(words[-n:] if len(words) > n else words)
+        out.append((words[-n:] if len(words) > n else words, loud_word(words)))
     return out
 
 
@@ -91,10 +100,11 @@ def underlined_words(doc):
     return got, stray
 
 
-def bold_words(doc):
-    """Words set in the bold face at the body text size. Scene headings are
-    bold too, but a touch larger (1.02x), so the size keeps them out; the
-    body size is the most common size of the roman spans."""
+def bold_words(doc, scale=1.0):
+    """Words set in the bold face at `scale` times the body text size (1.0 for
+    the bold outcue, 1.25 for the loud last word). Scene headings are bold
+    too, but at 1.02x, so the size keeps them out of both; the body size is
+    the most common size of the roman spans."""
     from collections import Counter
     spans = [sp for page in doc for b in page.get_text("dict")["blocks"]
              for l in b.get("lines", []) for sp in l["spans"] if sp["text"].strip()]
@@ -102,8 +112,8 @@ def bold_words(doc):
                     if "Bold" not in sp["font"] and "Italic" not in sp["font"] and sp["size"] >= 10)
     if not roman:
         return []
-    body = roman.most_common(1)[0][0]
-    return [w for sp in spans if "Bold" in sp["font"] and abs(sp["size"] - body) < 0.05
+    body = roman.most_common(1)[0][0] * scale
+    return [w for sp in spans if "Bold" in sp["font"] and abs(sp["size"] - body) < 0.08
             for w in sp["text"].split()]
 
 
@@ -118,21 +128,34 @@ def compare(label, got, exp_tokens, fails):
 def main():
     els_path, pdf_path, n = sys.argv[1], sys.argv[2], int(sys.argv[3])
     style = sys.argv[4] if len(sys.argv) > 4 else "underline"
-    want_u, want_b = style in ("underline", "both"), style in ("bold", "both")
+    parts = {"underline", "bold"} if style == "both" else {p.strip() for p in style.split(",") if p.strip()}
+    want_u, want_b, want_l = "underline" in parts, "bold" in parts, "lastWord" in parts
     els = json.load(open(els_path, encoding="utf-8"))["elements"]
     expected = speeches(els, n)
-    exp_tokens = sorted(w for oc in expected for w in oc)
+    exp_tokens = sorted(w for oc, _ in expected for w in oc)
+    exp_loud = sorted(lw for _, lw in expected if lw is not None)
+    # with the loud word on, that word is bold at the bigger size, so it leaves
+    # the body-size bold list (one occurrence per speech)
+    exp_bold = []
+    for oc, lw in expected:
+        oc = list(oc)
+        if want_l and lw is not None and lw in oc:
+            oc.remove(lw)
+        exp_bold += oc
+    exp_bold.sort()
     doc = fitz.open(pdf_path)
     got_u, stray = underlined_words(doc)
     got_b = bold_words(doc)
+    got_l = bold_words(doc, 1.25)
     fails = []
     if not expected:
         fails.append("no speeches found in the element stream")
     if stray:
         fails.append(f"{stray} underline(s) sit under no word")
     compare("underlined", got_u, exp_tokens if want_u else [], fails)
-    compare("bold", got_b, exp_tokens if want_b else [], fails)
-    short = sum(1 for oc in expected if len(oc) < n)
+    compare("bold", got_b, exp_bold if want_b else [], fails)
+    compare("loud (bold at 1.25x)", got_l, exp_loud if want_l else [], fails)
+    short = sum(1 for oc, _ in expected if len(oc) < n)
     if fails:
         for f in fails:
             print("      - " + f)

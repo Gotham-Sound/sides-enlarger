@@ -1,6 +1,6 @@
 // Headless engine run:
 //   node tools/run_engine_node.mjs <in.pdf> <out.pdf> [scale] ["NAME=paletteIdx;NAME2=paletteIdx"] \
-//        [--mode=page] [--enlarge-only="NAME;NAME2"] [--outcue=N] [--outcue-style=underline,bold]
+//        [--mode=page] [--enlarge-only="NAME;NAME2"] [--outcue=N] [--outcue-style=underline,bold,lastWord]
 //
 // What this is: the same engine that runs inside the web page, run from the
 // command line on one PDF. The tests and the verifier (check.py) use it so
@@ -11,8 +11,8 @@
 // Also accepted: --mode=reader, --emit=elements | --emit=analyze (write reader-mode elements
 // as JSON instead of a PDF), --watermark-text="A|B" (text to treat as a
 // watermark, not script), --outcue=N (Reader mode: mark the last N words of
-// every speech; 0 = off) with --outcue-style=underline,bold (either or both;
-// default underline).
+// every speech; 0 = off) with --outcue-style=underline,bold,lastWord (any mix;
+// default underline; lastWord = the last real word bold at 1.25x).
 // Exit codes: 0 ok; 3 the PDF is a scan with no real text layer; anything
 // else is a crash.
 import { createRequire } from 'module';
