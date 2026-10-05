@@ -251,7 +251,8 @@
     <span class="optLabel">Mark the last five words of every speech (Reader mode only):</span>
     <label class="chk"><input type="checkbox" id="outcueUnderline"> Underline</label>
     <label class="chk"><input type="checkbox" id="outcueBold"> Bold</label>
-    <span class="optHint">So the end of a line is seen coming. Off unless you tick one.</span>
+    <label class="chk"><input type="checkbox" id="outcueLoud"> Last word bigger</label>
+    <span class="optHint">So the end of a line is seen coming; "Last word bigger" sets the final word bold and a quarter larger. Off unless you tick one.</span>
   </div>
 
 
@@ -410,6 +411,7 @@ window.__bootSides__ = function (pdfjs) {
   // Reader mode: the outcue marks (v1.17.0), both off unless ticked (Peter's call)
   if (prefs.readerOutcueUnderline == null) prefs.readerOutcueUnderline = false;
   if (prefs.readerOutcueBold == null) prefs.readerOutcueBold = false;
+  if (prefs.readerOutcueLoud == null) prefs.readerOutcueLoud = false; // v1.18.0: the last word bold and bigger
   prefs.enlargeChars = prefs.enlargeChars || {};    // NAME -> true (selected mode)
 
   // the loaded PDF and the last output. 'busy' and 'queued' make sure only one
@@ -664,16 +666,20 @@ window.__bootSides__ = function (pdfjs) {
   // the Reader-mode checkboxes: persisted like the other settings, re-run the engine
   var outcueUnderline = document.getElementById('outcueUnderline');
   var outcueBold = document.getElementById('outcueBold');
+  var outcueLoud = document.getElementById('outcueLoud');
   outcueUnderline.checked = !!prefs.readerOutcueUnderline;
   outcueBold.checked = !!prefs.readerOutcueBold;
+  outcueLoud.checked = !!prefs.readerOutcueLoud;
   function onOutcueChange() {
     prefs.readerOutcueUnderline = outcueUnderline.checked;
     prefs.readerOutcueBold = outcueBold.checked;
+    prefs.readerOutcueLoud = outcueLoud.checked;
     savePrefs(prefs);
     scheduleProcess();
   }
   outcueUnderline.addEventListener('change', onOutcueChange);
   outcueBold.addEventListener('change', onOutcueChange);
+  outcueLoud.addEventListener('change', onOutcueChange);
   // one click listener for every mode button: the button's data-mode says which
   document.getElementById('modeRow').addEventListener('click', function (e) {
     var m = e.target && e.target.getAttribute && e.target.getAttribute('data-mode');
@@ -981,9 +987,9 @@ window.__bootSides__ = function (pdfjs) {
       if (prefs.enlargeMode === 'page') opts.mode = 'page';
       else if (prefs.enlargeMode === 'reader') {
         opts.mode = 'reader';
-        if (prefs.readerOutcueUnderline || prefs.readerOutcueBold) { // the outcue marks (v1.17.0), off unless ticked
+        if (prefs.readerOutcueUnderline || prefs.readerOutcueBold || prefs.readerOutcueLoud) { // the outcue marks, off unless ticked
           opts.outcueWords = 5;
-          opts.outcueStyle = { underline: !!prefs.readerOutcueUnderline, bold: !!prefs.readerOutcueBold };
+          opts.outcueStyle = { underline: !!prefs.readerOutcueUnderline, bold: !!prefs.readerOutcueBold, lastWord: !!prefs.readerOutcueLoud };
         }
       }
       else if (prefs.enlargeMode === 'selected') {

@@ -64,9 +64,9 @@ same-page-count rule:
   find it. Every reader page carries a footer reminding you the new page
   numbers do not match the shooting script. Highlights work here too. Reader
   mode can also mark the **last five words of every speech** (the outcue),
-  with an underline, bold type, or both, so the end of a line is seen coming:
-  two checkboxes under the mode buttons, shown in Reader mode only, both off
-  until you tick them.
+  with an underline, bold type, or both, and can set the **last word** bold and
+  a quarter larger, so the end of a line is seen coming: three checkboxes under
+  the mode buttons, shown in Reader mode only, all off until you tick them.
 
 ### Highlighting your lines
 After a PDF loads, a **"Highlight characters"** panel lists every speaking

@@ -26,7 +26,7 @@ const engine = require(path.join(root, 'engine.js'))({ pdfjsLib: {}, PDFLib: {},
 
 const el = (t, text, name) => ({ t, text, name });
 const cases = [];
-const add = (label, elements, expectOutcues, expectTrailing, n) => cases.push({ label, elements, expectOutcues, expectTrailing, n });
+const add = (label, elements, expectOutcues, expectTrailing, n, expectLoud) => cases.push({ label, elements, expectOutcues, expectTrailing, n, expectLoud });
 
 // 1. a short speech is marked whole
 add('short speech marked whole',
@@ -65,7 +65,19 @@ add('a scene heading ends the speech',
 add('dashes and ellipses count as words',
   [el('cue', 'DIAZ', 'DIAZ'), el('dialogue', 'Well -- I mean ... maybe  not', 'DIAZ')],
   [['I', 'mean', '...', 'maybe', 'not']], { 1: 5 });
-// 7. n <= 0 means no marks at all
+// 7. the loud word (lastWord style, v1.18.0): the last token with a letter or
+// digit, mapped to its element; a dash or ellipsis at the very end is skipped
+add('loud word skips a trailing dash',
+  [el('cue', 'SAM', 'SAM'), el('dialogue', 'What do you want from me --', 'SAM')],
+  [['do', 'you', 'want', 'from', 'me', '--'].slice(1)], { 1: 5 }, undefined, [['me', { 1: 5 }]]);
+add('loud word lives in the last element of a split speech',
+  [el('cue', 'LAURA', 'LAURA'), el('dialogue', 'one two three four', 'LAURA'),
+   el('paren', '(beat)', 'LAURA'), el('dialogue', 'five six seven ...', 'LAURA')],
+  [['four', 'five', 'six', 'seven', '...']], { 1: 1, 3: 4 }, undefined, [['seven', { 3: 2 }]]);
+add('no letters anywhere means no loud word',
+  [el('cue', 'SAM', 'SAM'), el('dialogue', '... --', 'SAM')],
+  [['...', '--']], { 1: 2 }, undefined, [[null, {}]]);
+// 8. n <= 0 means no marks at all
 add('zero words means no marks',
   [el('cue', 'DIAZ', 'DIAZ'), el('dialogue', 'Well -- I mean', 'DIAZ')], [], {}, 0);
 
@@ -75,7 +87,13 @@ for (const c of cases) {
   const got = engine.outcueMarks(c.elements, n);
   const outcues = got.speeches.map(s => s.outcue);
   const trailing = {}; for (const [k, v] of got.trailing) trailing[k] = v;
-  const ok = JSON.stringify(outcues) === JSON.stringify(c.expectOutcues) && JSON.stringify(trailing) === JSON.stringify(c.expectTrailing);
+  let ok = JSON.stringify(outcues) === JSON.stringify(c.expectOutcues) && JSON.stringify(trailing) === JSON.stringify(c.expectTrailing);
+  if (c.expectLoud) { // [loud word, { elementIndex: wordIndexWithinElement }] per speech
+    const loud = {}; for (const [k, v] of got.loud) loud[k] = v;
+    const gotLoud = got.speeches.map(s => [s.loud, loud]);
+    ok = ok && JSON.stringify(gotLoud.map(x => x[0])) === JSON.stringify(c.expectLoud.map(x => x[0]))
+      && JSON.stringify(loud) === JSON.stringify(Object.assign({}, ...c.expectLoud.map(x => x[1])));
+  }
   console.log(`    [${ok ? 'PASS' : 'FAIL'}] ${c.label}` + (ok ? '' : `  got ${JSON.stringify(outcues)} / ${JSON.stringify(trailing)}`));
   if (ok) passed++;
 }

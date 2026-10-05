@@ -2027,8 +2027,8 @@
     //           words belong to the outcue) }. n <= 0 means no marks at all.
     function outcueMarks(elements, n) {
       const els = elements || [];
-      const speeches = [], trailing = new Map();
-      if (!(n > 0)) return { speeches, trailing };
+      const speeches = [], trailing = new Map(), loud = new Map();
+      if (!(n > 0)) return { speeches, trailing, loud };
       const isSpeech = e => e.t === 'dialogue' || e.t === 'cue' || e.t === 'paren';
       const extend = (k, name, step) => {
         let edge = k, j = k + step;
@@ -2055,7 +2055,17 @@
           counts.push(ws.length); words.push(...ws);
         }
         const take = Math.min(Math.floor(n), words.length);
-        speeches.push({ name, first, last, words, outcue: words.slice(words.length - take) });
+        // the loud word (the lastWord style): the speech's last token that has a
+        // letter or digit in it, so a speech ending "--" or "..." shouts its real
+        // last word and not the dash. loud maps its element to the word's index
+        // within that element.
+        let li = -1;
+        for (let w = words.length - 1; w >= 0; w--) if (/[A-Za-z0-9]/.test(words[w])) { li = w; break; }
+        if (li >= 0) {
+          let acc = 0;
+          for (let m = 0; m < members.length; m++) { if (li < acc + counts[m]) { loud.set(members[m], li - acc); break; } acc += counts[m]; }
+        }
+        speeches.push({ name, first, last, words, outcue: words.slice(words.length - take), loud: li >= 0 ? words[li] : null });
         // hand the outcue back to its elements, from the last element backwards
         let left = take;
         for (let m = members.length - 1; m >= 0 && left > 0; m--) {
@@ -2064,7 +2074,7 @@
           left -= c;
         }
       }
-      return { speeches, trailing };
+      return { speeches, trailing, loud };
     }
 
     // options (v1.17.0): { outcueWords, outcueStyle } - mark the last N words of
@@ -2075,9 +2085,17 @@
     async function renderReader(elements, requested, hlMap, report, options) {
       const outcueN = options && options.outcueWords > 0 ? Math.floor(options.outcueWords) : 0;
       const marks = outcueMarks(elements, outcueN);
-      const style = { underline: true, bold: false };
-      if (options && options.outcueStyle) { style.underline = !!options.outcueStyle.underline; style.bold = !!options.outcueStyle.bold; }
-      if (outcueN && !style.underline && !style.bold) style.underline = true;
+      // outcueStyle (v1.18.0 adds lastWord): underline, bold and lastWord are
+      // independent. lastWord sets the speech's last real word in bold at
+      // LOUD times the type size (the "louder" mark: the standard fonts have no
+      // heavier weight than bold, so louder means bigger). 1.25 still fits
+      // inside the line spacing and the highlight strip at every reader size.
+      const LOUD = 1.25;
+      const style = { underline: true, bold: false, lastWord: false };
+      if (options && options.outcueStyle) {
+        style.underline = !!options.outcueStyle.underline; style.bold = !!options.outcueStyle.bold; style.lastWord = !!options.outcueStyle.lastWord;
+      }
+      if (outcueN && !style.underline && !style.bold && !style.lastWord) style.underline = true;
       report.outcueWords = outcueN;
       report.outcueStyle = outcueN ? style : null;
       const doc = await PDFLib.PDFDocument.create();
@@ -2150,9 +2168,22 @@
       // long), but a second run placed on the same line, or an underline's
       // end, must use the sum of the glyph advances or it lands early.
       const advance = (font, text, sz) => { let w = 0; for (const ch of text) w += font.widthOfTextAtSize(ch, sz); return w; };
+      // opts2.mark (v1.17.0, v1.18.0): { count, underline, bold, boldFont, loud,
+      // lastWord, loudScale }. The last `count` words of this run of lines are
+      // the outcue; `loud` is the index (within the element) of the speech's
+      // last real word. Each line is drawn as segments: maximal runs of words
+      // that share a face and size, every segment but the last keeping its
+      // trailing space so the text layer (copy, search, the verifier) sees the
+      // words apart. Bold sets the outcue in the bold face; lastWord sets the
+      // loud word in bold at loudScale; underline draws a line from the first
+      // outcue word to the end of the line, in the text's own colour (never a
+      // second colour), below the descenders of the biggest word on the line.
+      // With no mark the drawing is exactly what it was.
       const drawLines = (lines, font, sz, opts2) => {
-        const mark = opts2.mark && opts2.mark.count > 0 ? opts2.mark : null;
+        const mark = opts2.mark && (opts2.mark.count > 0 || opts2.mark.loud >= 0) ? opts2.mark : null;
         const totalWords = mark ? lines.reduce((n2, ln) => n2 + ln.split(' ').length, 0) : 0;
+        const styleOf = w => (mark.lastWord && w === mark.loud) ? { font: mark.boldFont, size: sz * mark.loudScale }
+          : (w >= totalWords - mark.count && mark.bold) ? { font: mark.boldFont, size: sz } : { font, size: sz };
         let seenWords = 0;
         for (const ln of lines) {
           ensure(lh);
@@ -2171,40 +2202,54 @@
           const base = y - lh + sz * 0.32;
           if (!mark) { page.drawText(ln, { x, y: base, size: sz, font }); y -= lh; continue; }
           const words = ln.split(' ');
-          const j = Math.max(0, (totalWords - mark.count) - seenWords); // first marked word on this line
+          const start = seenWords;
           seenWords += words.length;
-          if (j >= words.length) { page.drawText(ln, { x, y: base, size: sz, font }); y -= lh; continue; }
-          // a word's x is the width of what precedes it, drawn as one string
-          const prefix = words.slice(0, j).join(' '), suffix = words.slice(j).join(' ');
-          const lead = j ? advance(font, prefix + ' ', sz) : 0;
-          let lineW = advance(font, ln, sz);
-          if (mark.bold) {
-            // the prefix keeps its trailing space so the text layer (copy, search,
-            // the verifier) sees two words, not one glued across the font change
-            if (j) page.drawText(prefix + ' ', { x, y: base, size: sz, font });
-            page.drawText(suffix, { x: x + lead, y: base, size: sz, font: mark.boldFont });
-            lineW = lead + advance(mark.boldFont, suffix, sz);
-          } else page.drawText(ln, { x, y: base, size: sz, font });
-          if (mark.underline) {
-            const uy = base - sz * 0.28;
-            page.drawLine({ start: { x: x + lead, y: uy }, end: { x: x + lineW, y: uy },
+          const firstMarked = (totalWords - mark.count) - start;          // index within this line (may be past its end)
+          const hasLoud = mark.lastWord && mark.loud >= start && mark.loud < start + words.length;
+          if (firstMarked >= words.length && !hasLoud) { page.drawText(ln, { x, y: base, size: sz, font }); y -= lh; continue; }
+          const segs = [];
+          words.forEach((wd, i) => {
+            const st = styleOf(start + i), prev = segs[segs.length - 1];
+            if (prev && prev.font === st.font && prev.size === st.size) prev.words.push(wd);
+            else segs.push({ font: st.font, size: st.size, words: [wd], at: i });
+          });
+          let cx = x, ux = null, maxSize = sz;
+          segs.forEach((sg, si) => {
+            const t = sg.words.join(' ') + (si < segs.length - 1 ? ' ' : '');
+            if (ux === null && mark.count > 0 && firstMarked < sg.at + sg.words.length) {
+              // the underline starts at the first outcue word: its x is the
+              // width of what precedes it in this segment, as drawn
+              const k = Math.max(0, firstMarked - sg.at);
+              ux = cx + (k ? advance(sg.font, sg.words.slice(0, k).join(' ') + ' ', sg.size) : 0);
+            }
+            page.drawText(t, { x: cx, y: base, size: sg.size, font: sg.font });
+            cx += advance(sg.font, t, sg.size);
+            if (sg.size > maxSize) maxSize = sg.size;
+          });
+          if (mark.underline && ux !== null) {
+            const uy = base - maxSize * 0.28;
+            page.drawLine({ start: { x: ux, y: uy }, end: { x: cx, y: uy },
               thickness: Math.max(0.8, sz * 0.09), color: PDFLib.rgb(0, 0, 0) });
           }
           y -= lh;
         }
       };
-      // wrap for a dialogue element whose last words are set in bold: the bold
-      // run is wider than the same words in roman, so each line is measured the
-      // way it will be drawn (roman prefix, a space, bold suffix) or a full line
-      // could run past the margin. Greedy, like wrap(); a lone word always fits.
-      const wrapMarked = (text, font, boldFont, sz, width, firstMarked) => {
+      // wrap for a dialogue element with bold or loud words: those runs are
+      // wider than the same words in roman at the body size, so each line is
+      // measured the way it will be drawn (segment by segment, see drawLines)
+      // or a full line could run past the margin. Greedy, like wrap(); a lone
+      // word always fits. styleOf(wordIndex) -> { font, size }.
+      const wrapStyled = (text, styleOf, width) => {
         const words = text.split(' ');
-        const measure = (a, b) => { // as drawn: see advance()
-          const m = Math.min(Math.max(firstMarked, a), b);
-          const roman = words.slice(a, m).join(' '), bold = words.slice(m, b).join(' ');
-          if (!bold) return advance(font, roman, sz);
-          if (!roman) return advance(boldFont, bold, sz);
-          return advance(font, roman + ' ', sz) + advance(boldFont, bold, sz);
+        const measure = (a, b) => { // width of words[a..b) as drawn
+          let w = 0, i = a;
+          while (i < b) {
+            const st = styleOf(i); let j = i + 1;
+            while (j < b) { const s2 = styleOf(j); if (s2.font !== st.font || s2.size !== st.size) break; j++; }
+            w += advance(st.font, words.slice(i, j).join(' ') + (j < b ? ' ' : ''), st.size);
+            i = j;
+          }
+          return w;
         };
         const out = []; let a = 0;
         for (let b = 2; b <= words.length; b++) {
@@ -2268,9 +2313,13 @@
             break;
           case 'dialogue': {
             const k = marks.trailing.get(ei) || 0; // this element's share of its speech's outcue
-            if (!k) { drawLines(wrap(text, F, size, colW), F, size, { hl }); break; }
-            const lines = style.bold ? wrapMarked(text, F, FB, size, colW, text.split(' ').length - k) : wrap(text, F, size, colW);
-            drawLines(lines, F, size, { hl, mark: { count: k, underline: style.underline, bold: style.bold, boldFont: FB } });
+            const loudAt = style.lastWord && marks.loud.has(ei) ? marks.loud.get(ei) : -1;
+            if (!k && loudAt < 0) { drawLines(wrap(text, F, size, colW), F, size, { hl }); break; }
+            const T = text.split(' ').length;
+            const styleOf = w => (w === loudAt) ? { font: FB, size: size * LOUD }
+              : (w >= T - k && style.bold) ? { font: FB, size } : { font: F, size };
+            const lines = (style.bold || loudAt >= 0) ? wrapStyled(text, styleOf, colW) : wrap(text, F, size, colW);
+            drawLines(lines, F, size, { hl, mark: { count: k, underline: style.underline, bold: style.bold, boldFont: FB, loud: loudAt, lastWord: style.lastWord, loudScale: LOUD } });
             break;
           }
           case 'transition':
@@ -3075,7 +3124,8 @@
     // Reader PDF from an element stream reader() returned (or a subset of it).
     // options: { outcueWords: N (mark the last N words of every speech; 0 or
     // absent = off, output byte for byte as before), outcueStyle: { underline,
-    // bold } (independent; absent = underline), stamps: [text] (the
+    // bold, lastWord } (independent; absent = underline; lastWord = the last
+    // real word bold at 1.25x), stamps: [text] (the
     // recipient watermark text for every footer, report.readerStamps from the
     // analysis that produced the elements) }. A bare array in the 4th place is
     // still read as the stamps list (the shape before v1.17.0).
